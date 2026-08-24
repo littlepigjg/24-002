@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"logalert/internal/model"
+	"logalert/pkg/errors"
 	"logalert/pkg/logger"
 )
 
@@ -38,7 +39,7 @@ func (s *MemoryAlertStore) Record(ctx context.Context, alert *model.AlertEvent) 
 	defer s.mu.Unlock()
 
 	if len(s.alerts) >= s.maxSize {
-		s.evictOldest()
+		return errors.NewServiceError(errors.ErrKindLimitExceeded, 5004, "alert storage capacity exceeded")
 	}
 
 	s.alerts[alert.ID] = alert
@@ -53,7 +54,7 @@ func (s *MemoryAlertStore) Get(ctx context.Context, id string) (*model.AlertEven
 
 	alert, ok := s.alerts[id]
 	if !ok {
-		return nil, fmt.Errorf("alert not found: %s", id)
+		return nil, errors.WrapServiceError(errors.ErrKindNotFound, 4004, "alert not found", fmt.Errorf("id: %s", id))
 	}
 	return alert, nil
 }
@@ -65,7 +66,11 @@ func (s *MemoryAlertStore) UpdateStatus(ctx context.Context, id string, status m
 
 	alert, ok := s.alerts[id]
 	if !ok {
-		return fmt.Errorf("alert not found: %s", id)
+		return errors.WrapServiceError(errors.ErrKindNotFound, 4004, "alert not found", fmt.Errorf("id: %s", id))
+	}
+
+	if alert.Status == model.AlertResolved && status != model.AlertResolved {
+		return errors.WrapServiceError(errors.ErrKindStateConflict, 1008, "alert state conflict", fmt.Errorf("id: %s, current: %s", id, alert.Status))
 	}
 
 	alert.Status = status
@@ -204,7 +209,7 @@ func (s *MemoryAlertStore) Delete(ctx context.Context, id string) error {
 	defer s.mu.Unlock()
 
 	if _, ok := s.alerts[id]; !ok {
-		return fmt.Errorf("alert not found: %s", id)
+		return errors.WrapServiceError(errors.ErrKindNotFound, 4004, "alert not found", fmt.Errorf("id: %s", id))
 	}
 	delete(s.alerts, id)
 	return nil

@@ -2,6 +2,7 @@
 package errors
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -25,6 +26,83 @@ const (
 	ErrorTypeContext ErrorType = "context"
 	// ErrorTypeSerialization is for serialization errors.
 	ErrorTypeSerialization ErrorType = "serialization"
+	// ErrorTypeLimitExceeded is for rate limit / capacity errors.
+	ErrorTypeLimitExceeded ErrorType = "limit_exceeded"
+	// ErrorTypeStateConflict is for invalid state transitions.
+	ErrorTypeStateConflict ErrorType = "state_conflict"
+)
+
+// ServiceError represents a service-layer error with a typed kind and error code.
+type ServiceError struct {
+	Kind    string
+	Code    int
+	Message string
+	Cause   error
+}
+
+// NewServiceError creates a new ServiceError.
+func NewServiceError(kind string, code int, message string) *ServiceError {
+	return &ServiceError{
+		Kind:    kind,
+		Code:    code,
+		Message: message,
+	}
+}
+
+// WrapServiceError creates a ServiceError wrapping a cause error.
+func WrapServiceError(kind string, code int, message string, cause error) *ServiceError {
+	return &ServiceError{
+		Kind:    kind,
+		Code:    code,
+		Message: message,
+		Cause:   cause,
+	}
+}
+
+// Error returns the error string representation.
+func (e *ServiceError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+	}
+	return e.Message
+}
+
+// Unwrap returns the underlying cause error.
+func (e *ServiceError) Unwrap() error {
+	return e.Cause
+}
+
+// IsKind checks if an error is a ServiceError with the given kind using errors.As.
+func IsKind(err error, kind string) bool {
+	if err == nil {
+		return false
+	}
+	var svcErr *ServiceError
+	if errors.As(err, &svcErr) {
+		return svcErr.Kind == kind
+	}
+	return false
+}
+
+// GetCode extracts the error code from a ServiceError, or returns 0 if not a ServiceError.
+func GetCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var svcErr *ServiceError
+	if errors.As(err, &svcErr) {
+		return svcErr.Code
+	}
+	return 0
+}
+
+// ErrKind constants for ServiceError.Kind values.
+const (
+	ErrKindNotFound       = "not_found"
+	ErrKindValidation     = "validation"
+	ErrKindLimitExceeded  = "limit_exceeded"
+	ErrKindStateConflict  = "state_conflict"
+	ErrKindInternal       = "internal"
 )
 
 // DetailedError is an error with type, code, and details.

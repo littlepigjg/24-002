@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"logalert/internal/model"
+	"logalert/pkg/errors"
 	"logalert/pkg/logger"
 )
 
@@ -38,9 +39,8 @@ func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Enforce max size by removing oldest entries
 	if len(s.entries) >= s.maxSize {
-		s.evictOldest()
+		return errors.NewServiceError(errors.ErrKindLimitExceeded, 5003, "storage capacity exceeded")
 	}
 
 	s.entries[entry.ID] = entry
@@ -62,7 +62,7 @@ func (s *MemoryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEnt
 			continue
 		}
 		if len(s.entries) >= s.maxSize {
-			s.evictOldest()
+			return errors.NewServiceError(errors.ErrKindLimitExceeded, 5003, "storage capacity exceeded")
 		}
 		s.entries[entry.ID] = entry
 	}
@@ -78,7 +78,7 @@ func (s *MemoryLogStore) Get(ctx context.Context, id string) (*model.LogEntry, e
 
 	entry, ok := s.entries[id]
 	if !ok {
-		return nil, fmt.Errorf("log entry not found: %s", id)
+		return nil, errors.WrapServiceError(errors.ErrKindNotFound, 4002, "log entry not found", fmt.Errorf("id: %s", id))
 	}
 	return entry, nil
 }
@@ -132,7 +132,7 @@ func (s *MemoryLogStore) Delete(ctx context.Context, id string) error {
 	defer s.mu.Unlock()
 
 	if _, ok := s.entries[id]; !ok {
-		return fmt.Errorf("log entry not found: %s", id)
+		return errors.WrapServiceError(errors.ErrKindNotFound, 4002, "log entry not found", fmt.Errorf("id: %s", id))
 	}
 	delete(s.entries, id)
 	return nil

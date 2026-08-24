@@ -1,7 +1,8 @@
 # benzhi.Dockerfile - 评测专用 Dockerfile
 # 基于 golang:1.22 官方镜像，保留完整 Go 工具链
+# 使用国内镜像源加速拉取
 
-FROM golang:1.22
+FROM docker.m.daocloud.io/library/golang:1.22
 
 # 设置工作目录
 WORKDIR /app
