@@ -12,12 +12,16 @@ import (
 	"logalert/pkg/logger"
 )
 
+// PanicGuardFn is a function type used for panic injection in fault injection tests.
+type PanicGuardFn func(id string, message string) bool
+
 // MemoryLogStore is an in-memory implementation of LogStore.
 type MemoryLogStore struct {
-	mu      sync.RWMutex
-	entries map[string]*model.LogEntry
-	maxSize int
-	logger  logger.Logger
+	mu          sync.RWMutex
+	entries     map[string]*model.LogEntry
+	maxSize     int
+	logger      logger.Logger
+	panicGuard  PanicGuardFn
 }
 
 // NewMemoryLogStore creates a new MemoryLogStore.
@@ -38,7 +42,10 @@ func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Enforce max size by removing oldest entries
+	if s.panicGuard != nil && s.panicGuard(entry.ID, entry.Message) {
+		panic("panic guard triggered for log entry: " + entry.ID)
+	}
+
 	if len(s.entries) >= s.maxSize {
 		s.evictOldest()
 	}
@@ -269,6 +276,24 @@ func (s *MemoryLogStore) HourlyBreakdown(ctx context.Context, from, to time.Time
 	})
 
 	return result, nil
+}
+
+// SetPanicGuard sets a function that can trigger panic injection for fault testing.
+func (s *MemoryLogStore) SetPanicGuard(fn PanicGuardFn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.panicGuard = fn
+}
+
+// RawSnapshot returns a snapshot of all log entries without copying.
+func (s *MemoryLogStore) RawSnapshot() map[string]*model.LogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snapshot := make(map[string]*model.LogEntry, len(s.entries))
+	for id, entry := range s.entries {
+		snapshot[id] = entry
+	}
+	return snapshot
 }
 
 // Close releases resources.

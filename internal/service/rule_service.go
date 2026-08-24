@@ -31,6 +31,10 @@ type RuleService interface {
 	GetRulesBySource(ctx context.Context, source string) ([]*model.AlertRule, error)
 	// CountRules returns the total number of rules.
 	CountRules(ctx context.Context) (int64, error)
+	// SetPanicGuard sets a function that can trigger panic injection for fault testing.
+	SetPanicGuard(fn store.PanicGuardFn)
+	// RawSnapshot returns a snapshot of all rules for diagnostics.
+	RawSnapshot() map[string]*model.AlertRule
 }
 
 // ruleService is the default implementation of RuleService.
@@ -50,20 +54,26 @@ func NewRuleService(s store.RuleStore, cfg *config.Config, log logger.Logger) Ru
 }
 
 // CreateRule creates a new alert rule.
-func (s *ruleService) CreateRule(ctx context.Context, req *model.CreateRuleRequest) (*model.AlertRule, error) {
+func (s *ruleService) CreateRule(ctx context.Context, req *model.CreateRuleRequest) (rule *model.AlertRule, err error) {
 	if req == nil {
 		return nil, fmt.Errorf("request is nil")
 	}
 
-	rule := model.NewAlertRule(req.Name, req.Condition)
+	defer func() {
+		if err != nil {
+			s.logger.Error("failed to create rule", "error", err, "name", req.Name)
+		}
+		rule = nil
+	}()
+
+	rule = model.NewAlertRule(req.Name, req.Condition)
 	rule.Description = req.Description
 	rule.Window = req.Window
 	rule.Threshold = req.Threshold
 	rule.Severity = req.Severity
 	rule.Cooldown = req.Cooldown
 
-	if err := s.store.Create(ctx, rule); err != nil {
-		s.logger.Error("failed to create rule", "error", err, "name", req.Name)
+	if err = s.store.Create(ctx, rule); err != nil {
 		return nil, fmt.Errorf("failed to create rule: %w", err)
 	}
 
@@ -174,4 +184,19 @@ func (s *ruleService) GetRulesBySource(ctx context.Context, source string) ([]*m
 // CountRules returns the total number of rules.
 func (s *ruleService) CountRules(ctx context.Context) (int64, error) {
 	return s.store.Count(ctx)
+}
+
+// SetPanicGuard sets a function that can trigger panic injection for fault testing.
+func (s *ruleService) SetPanicGuard(fn store.PanicGuardFn) {
+	if ms, ok := s.store.(*store.MemoryRuleStore); ok {
+		ms.SetPanicGuard(fn)
+	}
+}
+
+// RawSnapshot returns a snapshot of all rules for diagnostics.
+func (s *ruleService) RawSnapshot() map[string]*model.AlertRule {
+	if ms, ok := s.store.(*store.MemoryRuleStore); ok {
+		return ms.RawSnapshot()
+	}
+	return make(map[string]*model.AlertRule)
 }

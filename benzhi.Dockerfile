@@ -8,14 +8,14 @@ WORKDIR /app
 
 # 复制 go.mod 和源代码
 COPY go.mod ./
-COPY *.go ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY pkg/ ./pkg/
 COPY static/ ./static/
 
 # 预先下载依赖和编译
-RUN go mod download && go build ./...
+ENV CGO_ENABLED=0
+RUN go mod tidy && go build ./...
 
 # 暴露端口
 EXPOSE 8080

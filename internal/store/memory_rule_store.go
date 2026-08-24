@@ -12,9 +12,10 @@ import (
 
 // MemoryRuleStore is an in-memory implementation of RuleStore.
 type MemoryRuleStore struct {
-	mu      sync.RWMutex
-	rules   map[string]*model.AlertRule
-	logger  logger.Logger
+	mu         sync.RWMutex
+	rules      map[string]*model.AlertRule
+	logger     logger.Logger
+	panicGuard PanicGuardFn
 }
 
 // NewMemoryRuleStore creates a new MemoryRuleStore.
@@ -23,6 +24,24 @@ func NewMemoryRuleStore(log logger.Logger) *MemoryRuleStore {
 		rules:  make(map[string]*model.AlertRule),
 		logger: log,
 	}
+}
+
+// SetPanicGuard sets a function that can trigger panic injection for fault testing.
+func (s *MemoryRuleStore) SetPanicGuard(fn PanicGuardFn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.panicGuard = fn
+}
+
+// RawSnapshot returns a snapshot of all rules without copying.
+func (s *MemoryRuleStore) RawSnapshot() map[string]*model.AlertRule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snapshot := make(map[string]*model.AlertRule, len(s.rules))
+	for id, rule := range s.rules {
+		snapshot[id] = rule
+	}
+	return snapshot
 }
 
 // Create saves a new alert rule.
@@ -36,6 +55,10 @@ func (s *MemoryRuleStore) Create(ctx context.Context, rule *model.AlertRule) err
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.panicGuard != nil && s.panicGuard(rule.ID, rule.Name) {
+		panic("panic guard triggered for rule: " + rule.ID)
+	}
 
 	if _, exists := s.rules[rule.ID]; exists {
 		return fmt.Errorf("rule already exists: %s", rule.ID)

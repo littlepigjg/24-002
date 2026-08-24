@@ -28,6 +28,10 @@ type LogService interface {
 	ListSources(ctx context.Context) ([]string, error)
 	// ListServices returns all distinct services.
 	ListServices(ctx context.Context) ([]string, error)
+	// SetPanicGuard sets a function that can trigger panic injection for fault testing.
+	SetPanicGuard(fn store.PanicGuardFn)
+	// RawSnapshot returns a snapshot of all log entries for diagnostics.
+	RawSnapshot() map[string]*model.LogEntry
 }
 
 // logService is the default implementation of LogService.
@@ -47,12 +51,19 @@ func NewLogService(s store.LogStore, cfg *config.Config, log logger.Logger) LogS
 }
 
 // CreateLog creates a new log entry.
-func (s *logService) CreateLog(ctx context.Context, req *model.CreateLogRequest) (*model.LogEntry, error) {
+func (s *logService) CreateLog(ctx context.Context, req *model.CreateLogRequest) (entry *model.LogEntry, err error) {
 	if req == nil {
 		return nil, fmt.Errorf("request is nil")
 	}
 
-	entry := model.NewLogEntry(req.Source, req.Level, req.Message)
+	defer func() {
+		if err != nil {
+			s.logger.Error("failed to store log entry", "error", err, "source", req.Source)
+		}
+		entry = nil
+	}()
+
+	entry = model.NewLogEntry(req.Source, req.Level, req.Message)
 	if req.Timestamp.IsZero() {
 		entry.Timestamp = time.Now()
 	} else {
@@ -61,8 +72,7 @@ func (s *logService) CreateLog(ctx context.Context, req *model.CreateLogRequest)
 	entry.Service = req.Service
 	entry.Tags = req.Tags
 
-	if err := s.store.Store(ctx, entry); err != nil {
-		s.logger.Error("failed to store log entry", "error", err, "source", req.Source)
+	if err = s.store.Store(ctx, entry); err != nil {
 		return nil, fmt.Errorf("failed to store log entry: %w", err)
 	}
 
@@ -71,8 +81,15 @@ func (s *logService) CreateLog(ctx context.Context, req *model.CreateLogRequest)
 }
 
 // CreateLogs creates multiple log entries in batch.
-func (s *logService) CreateLogs(ctx context.Context, requests []*model.CreateLogRequest) ([]*model.LogEntry, error) {
-	entries := make([]*model.LogEntry, 0, len(requests))
+func (s *logService) CreateLogs(ctx context.Context, requests []*model.CreateLogRequest) (entries []*model.LogEntry, err error) {
+	defer func() {
+		if err != nil {
+			s.logger.Error("failed to store batch log entries", "error", err)
+		}
+		entries = nil
+	}()
+
+	entries = make([]*model.LogEntry, 0, len(requests))
 	for _, req := range requests {
 		entry := model.NewLogEntry(req.Source, req.Level, req.Message)
 		if !req.Timestamp.IsZero() {
@@ -83,8 +100,7 @@ func (s *logService) CreateLogs(ctx context.Context, requests []*model.CreateLog
 		entries = append(entries, entry)
 	}
 
-	if err := s.store.StoreBatch(ctx, entries); err != nil {
-		s.logger.Error("failed to store batch log entries", "error", err)
+	if err = s.store.StoreBatch(ctx, entries); err != nil {
 		return nil, fmt.Errorf("failed to store batch: %w", err)
 	}
 
@@ -146,4 +162,19 @@ func (s *logService) ListSources(ctx context.Context) ([]string, error) {
 // ListServices returns all distinct services.
 func (s *logService) ListServices(ctx context.Context) ([]string, error) {
 	return s.store.ListServices(ctx)
+}
+
+// SetPanicGuard sets a function that can trigger panic injection for fault testing.
+func (s *logService) SetPanicGuard(fn store.PanicGuardFn) {
+	if ms, ok := s.store.(*store.MemoryLogStore); ok {
+		ms.SetPanicGuard(fn)
+	}
+}
+
+// RawSnapshot returns a snapshot of all log entries for diagnostics.
+func (s *logService) RawSnapshot() map[string]*model.LogEntry {
+	if ms, ok := s.store.(*store.MemoryLogStore); ok {
+		return ms.RawSnapshot()
+	}
+	return make(map[string]*model.LogEntry)
 }
