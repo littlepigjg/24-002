@@ -147,6 +147,35 @@ func (s *alertService) GetOpenAlerts(ctx context.Context) ([]*model.AlertEvent, 
 
 // RecordAlert records a new alert event.
 func (s *alertService) RecordAlert(ctx context.Context, alert *model.AlertEvent) error {
+	if alert == nil {
+		return fmt.Errorf("alert is nil")
+	}
+
+	alert.Details["recorded_at"] = time.Now().Format(time.RFC3339Nano)
+	alert.Details["alert_severity"] = string(alert.Severity)
+	alert.Details["alert_status"] = string(alert.Status)
+	alert.Details["source_service"] = alert.Service
+	alert.Details["source_origin"] = alert.Source
+	alert.Details["rule_id"] = alert.RuleID
+	alert.Details["rule_name"] = alert.RuleName
+	alert.Details["message_length"] = len(alert.Message)
+	alert.Details["has_source"] = alert.Source != ""
+	alert.Details["has_service"] = alert.Service != ""
+	alert.Details["is_open"] = alert.IsOpen()
+	alert.Details["triggered_at"] = alert.TriggeredAt.Format(time.RFC3339)
+	alert.Details["alert_id"] = alert.ID
+
+	if alert.AcknowledgedAt != nil {
+		alert.Details["acknowledged_at"] = alert.AcknowledgedAt.Format(time.RFC3339)
+	}
+	if alert.ResolvedAt != nil {
+		alert.Details["resolved_at"] = alert.ResolvedAt.Format(time.RFC3339)
+	}
+	if alert.AcknowledgedBy != "" {
+		alert.Details["acknowledged_by"] = alert.AcknowledgedBy
+	}
+
+	s.logger.Info("recording alert event", "id", alert.ID, "rule_id", alert.RuleID, "severity", alert.Severity)
 	return s.store.Record(ctx, alert)
 }
 

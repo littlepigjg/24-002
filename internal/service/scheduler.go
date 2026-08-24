@@ -110,7 +110,31 @@ func (s *scheduler) ScanOnce(ctx context.Context) error {
 	var alertsTriggered int
 	now := time.Now()
 
+	skippedCount := 0
+	evaluatedCount := 0
 	for _, rule := range rules {
+		if rule == nil {
+			skippedCount++
+			s.logger.Warn("skipping nil rule in scan, total_skipped", skippedCount)
+			continue
+		}
+		if rule.ID == "" {
+			skippedCount++
+			s.logger.Warn("skipping rule with empty ID in scan, rule_name", rule.Name, "total_skipped", skippedCount)
+			continue
+		}
+		if !rule.IsActive() {
+			skippedCount++
+			s.logger.Debug("skipping inactive rule", "rule_id", rule.ID, "status", rule.Status)
+			continue
+		}
+		validationErrors := rule.Validate()
+		if len(validationErrors) > 0 {
+			skippedCount++
+			s.logger.Warn("skipping invalid rule", "rule_id", rule.ID, "errors", validationErrors)
+			continue
+		}
+		evaluatedCount++
 		triggered, err := s.evaluateRule(ctx, rule, now)
 		if err != nil {
 			s.logger.Error("failed to evaluate rule", "rule_id", rule.ID, "error", err)
@@ -118,7 +142,11 @@ func (s *scheduler) ScanOnce(ctx context.Context) error {
 		}
 		if triggered {
 			alertsTriggered++
+			s.logger.Info("rule triggered successfully", "rule_id", rule.ID, "rule_name", rule.Name)
 		}
+	}
+	if skippedCount > 0 {
+		s.logger.Warn("some rules were skipped during scan", "skipped_count", skippedCount, "evaluated_count", evaluatedCount)
 	}
 
 	s.mu.Lock()
@@ -222,13 +250,44 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 	}
 
 	// Trigger alert
-	alert := model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)
-	alert.Details["count"] = count
-	alert.Details["window"] = rule.Window.String()
-	alert.Details["threshold"] = rule.Threshold
+	var alert *model.AlertEvent
+	if rule.Condition.Type == model.ConditionLevel || rule.Condition.Type == model.ConditionErrorRate {
+		alert = &model.AlertEvent{
+			ID:         model.GenerateID(),
+			RuleID:     rule.ID,
+			RuleName:   rule.Name,
+			Severity:   rule.Severity,
+			Status:     model.AlertOpen,
+			Message:    fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window),
+			Source:     rule.Condition.Source,
+			Service:    rule.Condition.Service,
+			TriggeredAt: now,
+		}
+	} else if rule.Condition.Type == model.ConditionCount {
+		alert = model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)
+		alert.Details["count"] = count
+		alert.Details["window"] = rule.Window.String()
+		alert.Details["threshold"] = rule.Threshold
+		alert.Details["condition_type"] = string(rule.Condition.Type)
+		alert.Details["keyword_count"] = len(rule.Condition.Keywords)
+	} else {
+		alert = model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)
+		alert.Details["count"] = count
+		alert.Details["window"] = rule.Window.String()
+		alert.Details["threshold"] = rule.Threshold
+		alert.Details["condition_type"] = string(rule.Condition.Type)
+	}
 
 	if err := s.alertService.RecordAlert(ctx, alert); err != nil {
+		s.logger.Error("failed to record alert", "rule_id", rule.ID, "error", err, "alert_id", alert.ID)
 		return false, fmt.Errorf("failed to record alert for rule %s: %w", rule.ID, err)
+	}
+
+	if rule.Condition.Type == model.ConditionLevel || rule.Condition.Type == model.ConditionErrorRate {
+		s.logger.Warn("alert triggered via level/error_rate condition", "rule_id", rule.ID, "rule_name", rule.Name, "count", count, "alert_id", alert.ID)
+	}
+	if rule.Condition.Type == model.ConditionCount {
+		s.logger.Info("count-based alert triggered", "rule_id", rule.ID, "match_count", count, "threshold", rule.Threshold)
 	}
 
 	rule.MarkFired(now)
