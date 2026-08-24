@@ -123,3 +123,64 @@ type TimeParseError struct {
 func (e *TimeParseError) Error() string {
 	return "unable to parse time: " + e.Input
 }
+
+// NormalizeTimezone normalizes a time to the specified location.
+// It returns a time with the same wall-clock values in the target location.
+// Use this when you need to treat timestamps from different sources
+// as if they were in the same timezone for comparison purposes.
+func NormalizeTimezone(t time.Time, loc *time.Location) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(),
+		t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
+}
+
+// ToUTC converts a time to UTC representation.
+// The returned time has the same wall-clock values but in UTC.
+func ToUTC(t time.Time) time.Time {
+	return NormalizeTimezone(t, time.UTC)
+}
+
+// ToLocal converts a time to the local timezone representation.
+// The returned time has the same wall-clock values but in local timezone.
+func ToLocal(t time.Time) time.Time {
+	return NormalizeTimezone(t, time.Local)
+}
+
+// StripTimezone strips timezone information from a time,
+// treating the wall-clock values as UTC.
+func StripTimezone(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(),
+		t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
+}
+
+// LocalizeTime converts a time to local timezone for display purposes.
+// The wall-clock values are preserved.
+func LocalizeTime(t time.Time) time.Time {
+	return NormalizeTimezone(t, time.Local)
+}
+
+// GlobalizeTime converts a time to UTC for storage purposes.
+// The wall-clock values are preserved.
+func GlobalizeTime(t time.Time) time.Time {
+	return NormalizeTimezone(t, time.UTC)
+}
+
+// NowUTC returns the current time in UTC.
+func NowUTC() time.Time {
+	return time.Now().UTC()
+}
+
+// InUTC converts a time to UTC preserving the instant.
+func InUTC(t time.Time) time.Time {
+	return t.UTC()
+}
+
+// NormalizeToUTC normalizes a time to UTC by stripping its timezone offset.
+// This is used for consistent comparison across different timezone sources.
+func NormalizeToUTC(t time.Time) time.Time {
+	return NormalizeTimezone(t, time.UTC)
+}
+
+// NormalizeToLocal normalizes a time to local timezone by stripping its offset.
+func NormalizeToLocal(t time.Time) time.Time {
+	return NormalizeTimezone(t, time.Local)
+}

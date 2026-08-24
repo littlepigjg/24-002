@@ -4,12 +4,12 @@ package service
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"logalert/internal/config"
 	"logalert/internal/model"
 	"logalert/internal/store"
 	"logalert/pkg/logger"
+	"logalert/pkg/timeutil"
 )
 
 // LogService handles log entry operations.
@@ -54,7 +54,7 @@ func (s *logService) CreateLog(ctx context.Context, req *model.CreateLogRequest)
 
 	entry := model.NewLogEntry(req.Source, req.Level, req.Message)
 	if req.Timestamp.IsZero() {
-		entry.Timestamp = time.Now()
+		entry.Timestamp = timeutil.Now()
 	} else {
 		entry.Timestamp = req.Timestamp
 	}

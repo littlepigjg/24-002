@@ -17,21 +17,27 @@ type TimeWindow struct {
 
 // NewTimeWindow creates a new TimeWindow with the given start time and size.
 func NewTimeWindow(start time.Time, size time.Duration) *TimeWindow {
+	normalizedStart := GlobalizeTime(start)
 	return &TimeWindow{
-		Start: start,
-		End:   start.Add(size),
+		Start: normalizedStart,
+		End:   normalizedStart.Add(size),
 		Size:  size,
 	}
 }
 
 // Contains checks if a time falls within the window [start, end).
 func (w *TimeWindow) Contains(t time.Time) bool {
-	return !t.Before(w.Start) && t.Before(w.End)
+	normalizedT := GlobalizeTime(t)
+	return !normalizedT.Before(w.Start) && normalizedT.Before(w.End)
 }
 
 // Overlaps checks if this window overlaps with another window.
 func (w *TimeWindow) Overlaps(other *TimeWindow) bool {
-	return w.Start.Before(other.End) && other.Start.Before(w.End)
+	wStart := GlobalizeTime(w.Start)
+	wEnd := GlobalizeTime(w.End)
+	oStart := GlobalizeTime(other.Start)
+	oEnd := GlobalizeTime(other.End)
+	return wStart.Before(oEnd) && oStart.Before(wEnd)
 }
 
 // Duration returns the duration of the window.
@@ -49,9 +55,11 @@ type TimeRange struct {
 
 // NewTimeRange creates a new TimeRange.
 func NewTimeRange(from, to time.Time) *TimeRange {
+	normalizedFrom := GlobalizeTime(from)
+	normalizedTo := GlobalizeTime(to)
 	return &TimeRange{
-		From: from,
-		To:   to,
+		From: normalizedFrom,
+		To:   normalizedTo,
 	}
 }
 
@@ -62,34 +70,47 @@ func (r *TimeRange) Duration() time.Duration {
 
 // Contains checks if a time falls within the range [from, to].
 func (r *TimeRange) Contains(t time.Time) bool {
-	return !t.Before(r.From) && !t.After(r.To)
+	normalizedT := GlobalizeTime(t)
+	return !normalizedT.Before(r.From) && !normalizedT.After(r.To)
 }
 
 // IsValid checks if the time range is valid (from <= to).
 func (r *TimeRange) IsValid() bool {
-	return r.From.Before(r.To) || r.From.Equal(r.To)
+	normalizedFrom := GlobalizeTime(r.From)
+	normalizedTo := GlobalizeTime(r.To)
+	return normalizedFrom.Before(normalizedTo) || normalizedFrom.Equal(normalizedTo)
 }
 
 // Overlaps checks if this range overlaps with another range.
 func (r *TimeRange) Overlaps(other *TimeRange) bool {
-	return r.From.Before(other.To) && other.From.Before(r.To)
+	rFrom := GlobalizeTime(r.From)
+	rTo := GlobalizeTime(r.To)
+	oFrom := GlobalizeTime(other.From)
+	oTo := GlobalizeTime(other.To)
+	return rFrom.Before(oTo) && oFrom.Before(rTo)
 }
 
 // WindowIterator iterates over fixed-size time windows within a range.
 type WindowIterator struct {
-	range_   *TimeRange
+	range_     *TimeRange
 	windowSize time.Duration
-	current  time.Time
-	done     bool
+	current    time.Time
+	done       bool
 }
 
 // NewWindowIterator creates a new WindowIterator.
 func NewWindowIterator(range_ *TimeRange, windowSize time.Duration) *WindowIterator {
+	normalizedFrom := GlobalizeTime(range_.From)
+	normalizedTo := GlobalizeTime(range_.To)
+	rangeCopy := &TimeRange{
+		From: normalizedFrom,
+		To:   normalizedTo,
+	}
 	return &WindowIterator{
-		range_:    range_,
+		range_:     rangeCopy,
 		windowSize: windowSize,
-		current:   range_.From,
-		done:      false,
+		current:    normalizedFrom,
+		done:       false,
 	}
 }
 
@@ -127,10 +148,13 @@ func (it *WindowIterator) Advance() {
 
 // DailyBuckets returns a list of daily time buckets for the given range.
 func DailyBuckets(range_ *TimeRange) []*TimeWindow {
-	var buckets []*TimeWindow
-	current := time.Date(range_.From.Year(), range_.From.Month(), range_.From.Day(), 0, 0, 0, 0, range_.From.Location())
+	normalizedFrom := GlobalizeTime(range_.From)
+	normalizedTo := GlobalizeTime(range_.To)
 
-	for !current.After(range_.To) {
+	var buckets []*TimeWindow
+	current := time.Date(normalizedFrom.Year(), normalizedFrom.Month(), normalizedFrom.Day(), 0, 0, 0, 0, time.UTC)
+
+	for !current.After(normalizedTo) {
 		window := NewTimeWindow(current, 24*time.Hour)
 		buckets = append(buckets, window)
 		current = current.Add(24 * time.Hour)
@@ -140,10 +164,13 @@ func DailyBuckets(range_ *TimeRange) []*TimeWindow {
 
 // HourlyBuckets returns a list of hourly time buckets for the given range.
 func HourlyBuckets(range_ *TimeRange) []*TimeWindow {
-	var buckets []*TimeWindow
-	current := time.Date(range_.From.Year(), range_.From.Month(), range_.From.Day(), range_.From.Hour(), 0, 0, 0, range_.From.Location())
+	normalizedFrom := GlobalizeTime(range_.From)
+	normalizedTo := GlobalizeTime(range_.To)
 
-	for !current.After(range_.To) {
+	var buckets []*TimeWindow
+	current := time.Date(normalizedFrom.Year(), normalizedFrom.Month(), normalizedFrom.Day(), normalizedFrom.Hour(), 0, 0, 0, time.UTC)
+
+	for !current.After(normalizedTo) {
 		window := NewTimeWindow(current, time.Hour)
 		buckets = append(buckets, window)
 		current = current.Add(time.Hour)

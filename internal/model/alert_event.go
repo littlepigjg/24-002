@@ -2,6 +2,8 @@ package model
 
 import (
 	"time"
+
+	"logalert/pkg/timeutil"
 )
 
 // AlertEvent represents an alert triggered by a rule.
@@ -170,11 +172,19 @@ func (f *AlertFilter) Matches(alert *AlertEvent) bool {
 		return false
 	}
 
-	if f.StartTime != nil && alert.TriggeredAt.Before(*f.StartTime) {
-		return false
+	if f.StartTime != nil {
+		normalizedAlertTime := timeutil.GlobalizeTime(alert.TriggeredAt)
+		normalizedStartTime := timeutil.GlobalizeTime(*f.StartTime)
+		if normalizedAlertTime.Before(normalizedStartTime) {
+			return false
+		}
 	}
-	if f.EndTime != nil && alert.TriggeredAt.After(*f.EndTime) {
-		return false
+	if f.EndTime != nil {
+		normalizedAlertTime := timeutil.GlobalizeTime(alert.TriggeredAt)
+		normalizedEndTime := timeutil.GlobalizeTime(*f.EndTime)
+		if normalizedAlertTime.After(normalizedEndTime) {
+			return false
+		}
 	}
 
 	return true

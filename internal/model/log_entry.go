@@ -3,6 +3,8 @@ package model
 
 import (
 	"time"
+
+	"logalert/pkg/timeutil"
 )
 
 // LogLevel represents the severity level of a log entry.
@@ -50,14 +52,15 @@ type LogEntry struct {
 
 // NewLogEntry creates a new LogEntry with sensible defaults.
 func NewLogEntry(source string, level LogLevel, message string) *LogEntry {
+	now := time.Now()
 	return &LogEntry{
 		ID:        GenerateID(),
-		Timestamp: time.Now(),
+		Timestamp: timeutil.GlobalizeTime(now),
 		Level:     level,
 		Source:    source,
 		Message:   message,
 		Tags:      make(map[string]string),
-		ReceivedAt: time.Now(),
+		ReceivedAt: timeutil.GlobalizeTime(now),
 	}
 }
 
@@ -174,11 +177,19 @@ func (f *LogFilter) Matches(entry *LogEntry) bool {
 	}
 
 	// Check time range
-	if f.StartTime != nil && entry.Timestamp.Before(*f.StartTime) {
-		return false
+	if f.StartTime != nil {
+		normalizedEntryTime := timeutil.GlobalizeTime(entry.Timestamp)
+		normalizedStartTime := timeutil.GlobalizeTime(*f.StartTime)
+		if normalizedEntryTime.Before(normalizedStartTime) {
+			return false
+		}
 	}
-	if f.EndTime != nil && entry.Timestamp.After(*f.EndTime) {
-		return false
+	if f.EndTime != nil {
+		normalizedEntryTime := timeutil.GlobalizeTime(entry.Timestamp)
+		normalizedEndTime := timeutil.GlobalizeTime(*f.EndTime)
+		if normalizedEntryTime.After(normalizedEndTime) {
+			return false
+		}
 	}
 
 	// Check keywords
