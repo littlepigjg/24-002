@@ -6,7 +6,7 @@ FROM golang:1.22
 # 设置工作目录
 WORKDIR /app
 
-# 复制 go.mod 和源代码
+# 复制 go.mod 和所有源代码
 COPY go.mod ./
 COPY *.go ./
 COPY cmd/ ./cmd/
@@ -15,7 +15,7 @@ COPY pkg/ ./pkg/
 COPY static/ ./static/
 
 # 预先下载依赖和编译
-RUN go mod download && go build ./...
+RUN go mod download && go build ./... && go vet ./...
 
 # 暴露端口
 EXPOSE 8080

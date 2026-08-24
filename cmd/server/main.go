@@ -61,6 +61,8 @@ func main() {
 	ruleHandler := handler.NewRuleHandler(ruleSvc, log)
 	alertHandler := handler.NewAlertHandler(alertSvc, log)
 	statsHandler := handler.NewStatsHandler(statsSvc, log)
+	configHandler := handler.NewConfigHandler(cfg, log)
+	configHandler.SetConfigPath(configPath)
 	healthHandler := handler.NewHealthHandler(log)
 	schedulerHandler := handler.NewSchedulerHandler(scheduler, log)
 
@@ -72,6 +74,7 @@ func main() {
 	ruleHandler.RegisterRoutes(mux)
 	alertHandler.RegisterRoutes(mux)
 	statsHandler.RegisterRoutes(mux)
+	configHandler.RegisterRoutes(mux)
 	healthHandler.RegisterRoutes(mux)
 	schedulerHandler.RegisterRoutes(mux)
 

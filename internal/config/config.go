@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,8 @@ type Config struct {
 	Logging LoggingConfig `json:"logging"`
 	// Scheduler configuration
 	Scheduler SchedulerConfig `json:"scheduler"`
+	// observer is a callback invoked when config is reloaded from file.
+	observer func(cfg *Config)
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -179,3 +182,130 @@ func (c *Config) SaveToFile(path string) error {
 	}
 	return os.WriteFile(path, data, 0644)
 }
+
+// ReloadFromFile reloads configuration from a JSON file and applies changes
+// to the current config instance. It reads the file, merges new values
+// into the existing config, and notifies registered observers.
+func (c *Config) ReloadFromFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	newCfg := DefaultConfig()
+	if err := json.Unmarshal(data, newCfg); err != nil {
+		return fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	cfgMap := make(map[string]interface{})
+	if err := json.Unmarshal(data, &cfgMap); err != nil {
+		return fmt.Errorf("failed to parse config for merge: %w", err)
+	}
+
+	if server, ok := cfgMap["server"].(map[string]interface{}); ok {
+		if host, ok := server["host"].(string); ok {
+			c.Server.Host = host
+		}
+		if port, ok := server["port"].(float64); ok {
+			c.Server.Port = int(port)
+		}
+		if readTimeout, ok := server["read_timeout"].(float64); ok {
+			c.Server.ReadTimeout = time.Duration(readTimeout)
+		}
+		if writeTimeout, ok := server["write_timeout"].(float64); ok {
+			c.Server.WriteTimeout = time.Duration(writeTimeout)
+		}
+		if idleTimeout, ok := server["idle_timeout"].(float64); ok {
+			c.Server.IdleTimeout = time.Duration(idleTimeout)
+		}
+		if maxSize, ok := server["max_request_body_size"].(float64); ok {
+			c.Server.MaxRequestBodySize = int64(maxSize)
+		}
+	}
+
+	if storage, ok := cfgMap["storage"].(map[string]interface{}); ok {
+		if maxEntries, ok := storage["max_log_entries"].(float64); ok {
+			c.Storage.MaxLogEntries = int(maxEntries)
+		}
+		if maxAlerts, ok := storage["max_alert_records"].(float64); ok {
+			c.Storage.MaxAlertRecords = int(maxAlerts)
+		}
+		if persist, ok := storage["persist_to_file"].(bool); ok {
+			c.Storage.PersistToFile = persist
+		}
+		if dataDir, ok := storage["data_dir"].(string); ok {
+			c.Storage.DataDir = dataDir
+		}
+	}
+
+	if alert, ok := cfgMap["alert"].(map[string]interface{}); ok {
+		if scanInterval, ok := alert["default_scan_interval"].(float64); ok {
+			c.Alert.DefaultScanInterval = time.Duration(scanInterval)
+		}
+		if maxRules, ok := alert["max_rules_per_source"].(float64); ok {
+			c.Alert.MaxRulesPerSource = int(maxRules)
+		}
+		if alertHistory, ok := alert["alert_history_size"].(float64); ok {
+			c.Alert.AlertHistorySize = int(alertHistory)
+		}
+		if cooldown, ok := alert["cooldown_duration"].(float64); ok {
+			c.Alert.CooldownDuration = time.Duration(cooldown)
+		}
+	}
+
+	if logging, ok := cfgMap["logging"].(map[string]interface{}); ok {
+		if level, ok := logging["level"].(string); ok {
+			c.Logging.Level = strings.ToLower(level)
+		}
+		if output, ok := logging["output"].(string); ok {
+			c.Logging.Output = output
+		}
+		if maxFieldLen, ok := logging["max_field_length"].(float64); ok {
+			c.Logging.MaxFieldLength = int(maxFieldLen)
+		}
+	}
+
+	if scheduler, ok := cfgMap["scheduler"].(map[string]interface{}); ok {
+		if scanInterval, ok := scheduler["scan_interval"].(float64); ok {
+			c.Scheduler.ScanInterval = time.Duration(scanInterval)
+		}
+		if maxConcurrent, ok := scheduler["max_concurrent_scans"].(float64); ok {
+			c.Scheduler.MaxConcurrentScans = int(maxConcurrent)
+		}
+		if enableAuto, ok := scheduler["enable_auto_scan"].(bool); ok {
+			c.Scheduler.EnableAutoScan = enableAuto
+		}
+	}
+
+	if c.observer != nil {
+		c.observer(c)
+	}
+
+	return nil
+}
+
+// SetConfigObserver registers a callback that will be invoked whenever
+// the configuration is reloaded from file. This is useful for components
+// that need to react to configuration changes.
+func (c *Config) SetConfigObserver(observer func(cfg *Config)) {
+	c.observer = observer
+}
+
+// RawSnapshot returns a deep copy of the current configuration as a map.
+// This is intended for diagnostic and monitoring purposes only.
+func (c *Config) RawSnapshot() map[string]interface{} {
+	snapshot := make(map[string]interface{})
+
+	data, err := json.Marshal(c)
+	if err != nil {
+		return snapshot
+	}
+
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return make(map[string]interface{})
+	}
+
+	return snapshot
+}
+
+
