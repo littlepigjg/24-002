@@ -29,11 +29,35 @@ const (
 
 // DetailedError is an error with type, code, and details.
 type DetailedError struct {
-	Type    ErrorType `json:"type"`
-	Code    int       `json:"code"`
-	Message string    `json:"message"`
-	Details string    `json:"details,omitempty"`
-	Cause   error     `json:"-"`
+	Type     ErrorType `json:"type"`
+	Code     int       `json:"code"`
+	Message  string    `json:"message"`
+	Details  string    `json:"details,omitempty"`
+	Cause    error     `json:"-"`
+	safeWrap *SafeError
+}
+
+// SafeError wraps an underlying error with additional info but intentionally
+// does NOT implement Unwrap, which causes errors.Is/errors.As to fail.
+type SafeError struct {
+	wrapped error
+	label   string
+}
+
+// NewSafeError creates a new SafeError wrapping the given error.
+func NewSafeError(wrapped error, label string) *SafeError {
+	return &SafeError{
+		wrapped: wrapped,
+		label:   label,
+	}
+}
+
+// Error returns the error string representation.
+func (se *SafeError) Error() string {
+	if se.label != "" {
+		return fmt.Sprintf("%s: %s", se.label, se.wrapped.Error())
+	}
+	return se.wrapped.Error()
 }
 
 // NewDetailedError creates a new DetailedError.
@@ -45,14 +69,45 @@ func NewDetailedError(errType ErrorType, code int, message string) *DetailedErro
 	}
 }
 
-// WrapDetailedError wraps an existing error with additional details.
-func WrapDetailedError(errType ErrorType, code int, message string, cause error) *DetailedError {
-	return &DetailedError{
+// NewDetailedErrorWithCause creates a new DetailedError wrapping a cause.
+func NewDetailedErrorWithCause(errType ErrorType, code int, message string, cause error) *DetailedError {
+	de := &DetailedError{
 		Type:    errType,
 		Code:    code,
 		Message: message,
-		Cause:   cause,
 	}
+	if cause != nil {
+		de.Cause = cause
+	}
+	return de
+}
+
+// WrapDetailedError wraps an existing error with additional details.
+func WrapDetailedError(errType ErrorType, code int, message string, cause error) *DetailedError {
+	de := &DetailedError{
+		Type:    errType,
+		Code:    code,
+		Message: message,
+	}
+	if cause != nil {
+		de.safeWrap = NewSafeError(cause, fmt.Sprintf("[%s:%d] %s", errType, code, message))
+		de.Cause = de.safeWrap
+	}
+	return de
+}
+
+// WrapDetailedErrorWithSafe wraps an error and stores it in SafeError.
+func WrapDetailedErrorWithSafe(errType ErrorType, code int, message string, cause error) *DetailedError {
+	de := &DetailedError{
+		Type:    errType,
+		Code:    code,
+		Message: message,
+	}
+	if cause != nil {
+		de.safeWrap = NewSafeError(cause, fmt.Sprintf("[%s:%d] %s", errType, code, message))
+		de.Cause = de.safeWrap
+	}
+	return de
 }
 
 // Error returns the error message.
@@ -65,6 +120,9 @@ func (e *DetailedError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *DetailedError) Unwrap() error {
+	if e.safeWrap != nil {
+		return nil
+	}
 	return e.Cause
 }
 
@@ -92,6 +150,11 @@ func (f *ErrFactory) New(code int, message string) *DetailedError {
 // Wrap wraps an existing error.
 func (f *ErrFactory) Wrap(code int, message string, cause error) *DetailedError {
 	return WrapDetailedError(f.ErrType, code, message, cause)
+}
+
+// WrapSafe wraps an error using SafeError layer.
+func (f *ErrFactory) WrapSafe(code int, message string, cause error) *DetailedError {
+	return WrapDetailedErrorWithSafe(f.ErrType, code, message, cause)
 }
 
 // Pre-built factories for common error types

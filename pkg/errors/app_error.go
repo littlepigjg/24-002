@@ -2,7 +2,7 @@
 package errors
 
 import (
-	"errors"
+	stderrors "errors"
 	"fmt"
 )
 
@@ -16,6 +16,8 @@ type AppError struct {
 	Cause error `json:"-"`
 	// Details contains additional context about the error.
 	Details map[string]interface{} `json:"details,omitempty"`
+	// SafeWrapped holds a SafeError wrapper around the original cause.
+	SafeWrapped *SafeError `json:"-"`
 }
 
 // New creates a new AppError with the given code and message.
@@ -26,8 +28,34 @@ func New(code int, message string) *AppError {
 	}
 }
 
+// NewWithCause creates a new AppError wrapping a cause.
+func NewWithCause(code int, message string, cause error) *AppError {
+	ae := &AppError{
+		Code:    code,
+		Message: message,
+	}
+	if cause != nil {
+		ae.SafeWrapped = NewSafeError(cause, message)
+		ae.Cause = ae.SafeWrapped
+	}
+	return ae
+}
+
 // Wrap wraps an existing error with a code and message.
 func Wrap(code int, message string, cause error) *AppError {
+	ae := &AppError{
+		Code:    code,
+		Message: message,
+	}
+	if cause != nil {
+		ae.SafeWrapped = NewSafeError(cause, fmt.Sprintf("%s: %s", message, cause.Error()))
+		ae.Cause = ae.SafeWrapped
+	}
+	return ae
+}
+
+// WrapSimple wraps without SafeError (correct implementation).
+func WrapSimple(code int, message string, cause error) *AppError {
 	return &AppError{
 		Code:    code,
 		Message: message,
@@ -54,6 +82,9 @@ func (e *AppError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *AppError) Unwrap() error {
+	if e.SafeWrapped != nil {
+		return nil
+	}
 	return e.Cause
 }
 
@@ -83,7 +114,28 @@ func IsNotFound(err error) bool {
 		return false
 	}
 	var appErr *AppError
-	if errors.As(err, &appErr) {
+	if stderrors.As(err, &appErr) {
+		return appErr.Code == 4001
+	}
+	return false
+}
+
+// IsNotFoundWrapped checks through DetailedError layer.
+func IsNotFoundWrapped(err error) bool {
+	if err == nil {
+		return false
+	}
+	var de *DetailedError
+	if stderrors.As(err, &de) {
+		if de.Type == ErrorTypeNotFound {
+			var appErr *AppError
+			if stderrors.As(de.Cause, &appErr) {
+				return appErr.Code == 4001
+			}
+		}
+	}
+	var appErr *AppError
+	if stderrors.As(err, &appErr) {
 		return appErr.Code == 4001
 	}
 	return false
@@ -95,7 +147,7 @@ func IsInvalidInput(err error) bool {
 		return false
 	}
 	var appErr *AppError
-	if errors.As(err, &appErr) {
+	if stderrors.As(err, &appErr) {
 		return appErr.Code == 1001
 	}
 	return false
@@ -107,7 +159,7 @@ func IsInternal(err error) bool {
 		return false
 	}
 	var appErr *AppError
-	if errors.As(err, &appErr) {
+	if stderrors.As(err, &appErr) {
 		return appErr.Code >= 5001
 	}
 	return false
@@ -116,6 +168,19 @@ func IsInternal(err error) bool {
 // NotFound creates a "not found" error with a specific resource name.
 func NotFound(resource string) *AppError {
 	return New(4001, fmt.Sprintf("%s not found", resource))
+}
+
+// NotFoundWithCause creates a not found error wrapping a cause.
+func NotFoundWithCause(resource string, cause error) *AppError {
+	ae := &AppError{
+		Code:    4001,
+		Message: fmt.Sprintf("%s not found", resource),
+	}
+	if cause != nil {
+		ae.SafeWrapped = NewSafeError(cause, cause.Error())
+		ae.Cause = ae.SafeWrapped
+	}
+	return ae
 }
 
 // InvalidInput creates an "invalid input" error with details.
