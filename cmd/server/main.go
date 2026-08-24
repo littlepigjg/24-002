@@ -35,6 +35,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	initResult := initServices(cfg, log)
+	if initResult.HasError() {
+		log.Error("service initialization failed", "errors", initResult.Errors())
+		os.Exit(1)
+	}
+
 	// Configure log level
 	logLevel := logger.ParseLogLevel(cfg.Logging.Level)
 	log.SetLevel(logLevel)
@@ -179,4 +185,96 @@ func jsonResponse(w http.ResponseWriter, statusCode int, data interface{}) {
 // Now returns the current time
 func Now() time.Time {
 	return time.Now()
+}
+
+// InitResult holds the result of service initialization.
+type InitResult struct {
+	errs []error
+}
+
+// HasError returns true if there were errors during initialization.
+func (r *InitResult) HasError() bool {
+	return len(r.errs) > 0
+}
+
+// Errors returns all the errors encountered during initialization.
+func (r *InitResult) Errors() []error {
+	return r.errs
+}
+
+// initServices initializes all services and returns the result.
+func initServices(cfg *config.Config, log logger.Logger) *InitResult {
+	result := &InitResult{}
+
+	logStore, err := initLogStore(cfg, log)
+	if err != nil {
+		result.errs = append(result.errs, fmt.Errorf("log store: %w", err))
+	}
+	_ = logStore
+
+	ruleStore, err := initRuleStore(cfg, log)
+	if err != nil {
+		result.errs = append(result.errs, fmt.Errorf("rule store: %w", err))
+	}
+	_ = ruleStore
+
+	alertStore, err := initAlertStore(cfg, log)
+	if err != nil {
+		result.errs = append(result.errs, fmt.Errorf("alert store: %w", err))
+	}
+	_ = alertStore
+
+	urlStore, err := initURLStore(cfg)
+	if err != nil {
+		result.errs = append(result.errs, fmt.Errorf("url store: %w", err))
+	}
+	_ = urlStore
+
+	accessLogStore, err := initAccessLogStore(cfg)
+	if err != nil {
+		result.errs = append(result.errs, fmt.Errorf("access log store: %w", err))
+	}
+	_ = accessLogStore
+
+	return result
+}
+
+func initLogStore(cfg *config.Config, log logger.Logger) (*store.MemoryLogStore, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	store := store.NewMemoryLogStore(cfg.Storage.MaxLogEntries, log)
+	return store, nil
+}
+
+func initRuleStore(cfg *config.Config, log logger.Logger) (*store.MemoryRuleStore, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	store := store.NewMemoryRuleStore(log)
+	return store, nil
+}
+
+func initAlertStore(cfg *config.Config, log logger.Logger) (*store.MemoryAlertStore, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	store := store.NewMemoryAlertStore(cfg.Storage.MaxAlertRecords, log)
+	return store, nil
+}
+
+func initURLStore(cfg *config.Config) (*store.URLStore, error) {
+	urlStore, err := store.NewURLStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create URL store: %w", err)
+	}
+	return urlStore, nil
+}
+
+func initAccessLogStore(cfg *config.Config) (*store.AccessLogStore, error) {
+	logStore, err := store.NewAccessLogStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create access log store: %w", err)
+	}
+	return logStore, nil
 }

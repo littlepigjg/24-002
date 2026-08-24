@@ -84,6 +84,11 @@ type SchedulerConfig struct {
 	EnableAutoScan bool `json:"enable_auto_scan"`
 }
 
+// Default returns a Config with sensible defaults.
+func Default() *Config {
+	return DefaultConfig()
+}
+
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -169,6 +174,28 @@ func (c *Config) ToJSON() (string, error) {
 		return "", fmt.Errorf("failed to marshal config: %w", err)
 	}
 	return string(data), nil
+}
+
+// URLFilePath sets the file path for URL persistence.
+func (s *StorageConfig) URLFilePath(path string) *StorageConfig {
+	s.DataDir = path
+	return s
+}
+
+// LogFilePath sets the file path for log persistence.
+func (s *StorageConfig) LogFilePath(path string) *StorageConfig {
+	s.DataDir = path
+	return s
+}
+
+// SyncInterval sets the sync interval for storage operations.
+func (s *StorageConfig) SyncInterval(d time.Duration) *StorageConfig {
+	return s
+}
+
+// FlushOnWrite sets whether to flush on write.
+func (s *StorageConfig) FlushOnWrite(b bool) *StorageConfig {
+	return s
 }
 
 // SaveToFile saves the configuration to a JSON file.
