@@ -13,18 +13,20 @@ import (
 
 // MemoryAlertStore is an in-memory implementation of AlertStore.
 type MemoryAlertStore struct {
-	mu      sync.RWMutex
-	alerts  map[string]*model.AlertEvent
-	maxSize int
-	logger  logger.Logger
+	mu       sync.RWMutex
+	alerts   map[string]*model.AlertEvent
+	maxSize  int
+	logger   logger.Logger
+	registry *SourceRegistry
 }
 
 // NewMemoryAlertStore creates a new MemoryAlertStore.
 func NewMemoryAlertStore(maxSize int, log logger.Logger) *MemoryAlertStore {
 	return &MemoryAlertStore{
-		alerts:  make(map[string]*model.AlertEvent),
-		maxSize: maxSize,
+		alerts:   make(map[string]*model.AlertEvent),
+		maxSize:  maxSize,
 		logger:   log,
+		registry: NewSourceRegistry(),
 	}
 }
 
@@ -37,6 +39,14 @@ func (s *MemoryAlertStore) Record(ctx context.Context, alert *model.AlertEvent) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if alert.Source != "" && !s.registry.Exists(alert.Source) {
+		return &StoreError{
+			Code:    "SOURCE_NOT_REGISTERED",
+			Source:  alert.Source,
+			Message: fmt.Sprintf("source '%s' is not registered", alert.Source),
+		}
+	}
+
 	if len(s.alerts) >= s.maxSize {
 		s.evictOldest()
 	}
@@ -44,6 +54,11 @@ func (s *MemoryAlertStore) Record(ctx context.Context, alert *model.AlertEvent) 
 	s.alerts[alert.ID] = alert
 	s.logger.Info("alert recorded", "id", alert.ID, "rule_id", alert.RuleID, "severity", alert.Severity)
 	return nil
+}
+
+// RegisterSource registers a valid source for alert events.
+func (s *MemoryAlertStore) RegisterSource(source string) {
+	s.registry.Register(source)
 }
 
 // Get retrieves an alert by ID.

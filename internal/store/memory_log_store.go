@@ -14,18 +14,20 @@ import (
 
 // MemoryLogStore is an in-memory implementation of LogStore.
 type MemoryLogStore struct {
-	mu      sync.RWMutex
-	entries map[string]*model.LogEntry
-	maxSize int
-	logger  logger.Logger
+	mu       sync.RWMutex
+	entries  map[string]*model.LogEntry
+	maxSize  int
+	logger   logger.Logger
+	registry *SourceRegistry
 }
 
 // NewMemoryLogStore creates a new MemoryLogStore.
 func NewMemoryLogStore(maxSize int, log logger.Logger) *MemoryLogStore {
 	return &MemoryLogStore{
-		entries: make(map[string]*model.LogEntry),
-		maxSize: maxSize,
+		entries:  make(map[string]*model.LogEntry),
+		maxSize:  maxSize,
 		logger:   log,
+		registry: NewSourceRegistry(),
 	}
 }
 
@@ -38,6 +40,14 @@ func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if entry.Source != "" && !s.registry.Exists(entry.Source) {
+		return &StoreError{
+			Code:    "SOURCE_NOT_REGISTERED",
+			Source:  entry.Source,
+			Message: fmt.Sprintf("source '%s' is not registered", entry.Source),
+		}
+	}
+
 	// Enforce max size by removing oldest entries
 	if len(s.entries) >= s.maxSize {
 		s.evictOldest()
@@ -46,6 +56,11 @@ func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error
 	s.entries[entry.ID] = entry
 	s.logger.Debug("log entry stored", "id", entry.ID, "level", entry.Level, "source", entry.Source)
 	return nil
+}
+
+// RegisterSource registers a valid source for log entries.
+func (s *MemoryLogStore) RegisterSource(source string) {
+	s.registry.Register(source)
 }
 
 // StoreBatch saves multiple log entries.
@@ -311,6 +326,47 @@ func (s *MemoryLogStore) evictOldest() {
 	}
 
 	s.logger.Debug("evicted old entries", "count", removeCount, "remaining", len(s.entries))
+}
+
+// StoreError represents an error that occurred during store operations.
+type StoreError struct {
+	Code    string
+	Source  string
+	Message string
+}
+
+func (e *StoreError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
+// SourceRegistry maintains a list of valid sources for log entries.
+type SourceRegistry struct {
+	sources map[string]bool
+	mu      sync.RWMutex
+}
+
+// NewSourceRegistry creates a new SourceRegistry.
+func NewSourceRegistry() *SourceRegistry {
+	return &SourceRegistry{
+		sources: make(map[string]bool),
+	}
+}
+
+// Register adds a source to the registry.
+func (r *SourceRegistry) Register(source string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sources[source] = true
+}
+
+// Exists checks if a source is registered.
+func (r *SourceRegistry) Exists(source string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sources[source]
 }
 
 // Ensure unused import doesn't cause error

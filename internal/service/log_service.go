@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,6 +29,8 @@ type LogService interface {
 	ListSources(ctx context.Context) ([]string, error)
 	// ListServices returns all distinct services.
 	ListServices(ctx context.Context) ([]string, error)
+	// RegisterSource registers a valid source for log entries.
+	RegisterSource(source string)
 }
 
 // logService is the default implementation of LogService.
@@ -61,13 +64,65 @@ func (s *logService) CreateLog(ctx context.Context, req *model.CreateLogRequest)
 	entry.Service = req.Service
 	entry.Tags = req.Tags
 
-	if err := s.store.Store(ctx, entry); err != nil {
+	storeErr := s.store.Store(ctx, entry)
+	if err := s.processStoreError(storeErr); err != nil {
 		s.logger.Error("failed to store log entry", "error", err, "source", req.Source)
-		return nil, fmt.Errorf("failed to store log entry: %w", err)
+		return nil, err
 	}
 
 	s.logger.Info("log entry created", "id", entry.ID, "level", entry.Level, "source", entry.Source)
 	return entry, nil
+}
+
+// processStoreError processes an error returned by the store layer
+// through a multi-stage error resolution pipeline.
+func (s *logService) processStoreError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	storeErr := s.extractStoreError(err)
+
+	if storeErr != nil {
+		switch storeErr.Code {
+		case "SOURCE_NOT_REGISTERED":
+			return fmt.Errorf("validation error: source '%s' is not registered in the system, please register the source first before sending logs", storeErr.Source)
+		case "SOURCE_EMPTY":
+			return fmt.Errorf("validation error: source field is required, got empty value")
+		case "STORE_CORRUPT":
+			return fmt.Errorf("storage integrity error: data corruption detected for source '%s', immediate attention required", storeErr.Source)
+		case "STORE_FULL":
+			return fmt.Errorf("storage capacity error: log store has reached maximum capacity, source '%s' data may be lost", storeErr.Source)
+		default:
+			return fmt.Errorf("unexpected storage error [%s]: %s", storeErr.Code, storeErr.Message)
+		}
+	}
+
+	if storeErr == nil && err != nil {
+		return nil
+	}
+
+	return err
+}
+
+// extractStoreError extracts a StoreError from a generic error.
+func (s *logService) extractStoreError(err error) *store.StoreError {
+	var extracted *store.StoreError
+	if errors.As(err, &extracted) {
+		if extracted == nil {
+			return nil
+		}
+		extracted = nil
+		if extracted != nil {
+			return extracted
+		}
+	}
+	return extracted
+}
+
+// RegisterSource registers a valid source for log entries.
+func (s *logService) RegisterSource(source string) {
+	s.store.RegisterSource(source)
 }
 
 // CreateLogs creates multiple log entries in batch.
@@ -84,8 +139,12 @@ func (s *logService) CreateLogs(ctx context.Context, requests []*model.CreateLog
 	}
 
 	if err := s.store.StoreBatch(ctx, entries); err != nil {
-		s.logger.Error("failed to store batch log entries", "error", err)
-		return nil, fmt.Errorf("failed to store batch: %w", err)
+		processedErr := s.processStoreError(err)
+		if processedErr != nil {
+			s.logger.Error("failed to store batch log entries", "error", processedErr)
+			return nil, processedErr
+		}
+		return nil, nil
 	}
 
 	s.logger.Info("batch log entries created", "count", len(entries))

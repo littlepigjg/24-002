@@ -104,6 +104,11 @@ func (s *RetryLogStore) HourlyBreakdown(ctx context.Context, from, to time.Time)
 	return s.store.HourlyBreakdown(ctx, from, to)
 }
 
+// RegisterSource registers a valid source for log entries.
+func (s *RetryLogStore) RegisterSource(source string) {
+	s.store.RegisterSource(source)
+}
+
 // Close releases resources.
 func (s *RetryLogStore) Close() error {
 	return s.store.Close()

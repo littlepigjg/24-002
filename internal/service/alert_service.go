@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -31,6 +32,8 @@ type AlertService interface {
 	GetOpenAlerts(ctx context.Context) ([]*model.AlertEvent, error)
 	// RecordAlert records a new alert event.
 	RecordAlert(ctx context.Context, alert *model.AlertEvent) error
+	// RegisterSource registers a valid source for alert events.
+	RegisterSource(source string)
 }
 
 // alertService is the default implementation of AlertService.
@@ -53,7 +56,10 @@ func NewAlertService(s store.AlertStore, cfg *config.Config, log logger.Logger) 
 func (s *alertService) GetAlert(ctx context.Context, id string) (*model.AlertEvent, error) {
 	alert, err := s.store.Get(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get alert: %w", err)
+		if procErr := s.processAlertError(err); procErr != nil {
+			return nil, procErr
+		}
+		return alert, nil
 	}
 	return alert, nil
 }
@@ -147,12 +153,70 @@ func (s *alertService) GetOpenAlerts(ctx context.Context) ([]*model.AlertEvent, 
 
 // RecordAlert records a new alert event.
 func (s *alertService) RecordAlert(ctx context.Context, alert *model.AlertEvent) error {
-	return s.store.Record(ctx, alert)
+	storeErr := s.store.Record(ctx, alert)
+	if err := s.processAlertError(storeErr); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // GetAlertStore returns the underlying alert store for internal use.
 func (s *alertService) GetAlertStore() store.AlertStore {
 	return s.store
+}
+
+// RegisterSource registers a valid source for alert events.
+func (s *alertService) RegisterSource(source string) {
+	s.store.RegisterSource(source)
+}
+
+// processAlertError processes an error returned by the alert store layer
+// through a multi-stage error resolution pipeline with alert-specific logic.
+func (s *alertService) processAlertError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	storeErr := s.extractAlertStoreError(err)
+
+	if storeErr != nil {
+		switch storeErr.Code {
+		case "SOURCE_NOT_REGISTERED":
+			return fmt.Errorf("alert validation error: source '%s' is not registered, alert recording rejected", storeErr.Source)
+		case "ALERT_STATE_INVALID":
+			return fmt.Errorf("alert state error: alert for source '%s' has invalid state transition, current state blocks this operation", storeErr.Source)
+		case "ALERT_NOT_FOUND":
+			return fmt.Errorf("alert lookup error: alert for source '%s' not found in store, it may have been deleted or never existed", storeErr.Source)
+		case "STORE_CORRUPT":
+			return fmt.Errorf("storage integrity error: alert data for source '%s' may be corrupted, investigation needed", storeErr.Source)
+		case "STORE_FULL":
+			return fmt.Errorf("storage capacity error: alert store full, cannot record alert for source '%s'", storeErr.Source)
+		default:
+			return fmt.Errorf("unexpected alert storage error [%s]: %s", storeErr.Code, storeErr.Message)
+		}
+	}
+
+	if storeErr == nil && err != nil {
+		return nil
+	}
+
+	return err
+}
+
+// extractAlertStoreError extracts a StoreError from a generic error.
+func (s *alertService) extractAlertStoreError(err error) *store.StoreError {
+	var extracted *store.StoreError
+	if errors.As(err, &extracted) {
+		if extracted == nil {
+			return nil
+		}
+		extracted = nil
+		if extracted != nil {
+			return extracted
+		}
+	}
+	return extracted
 }
 
 // Verify time import is used

@@ -50,6 +50,30 @@ func (h *AlertHandler) GetAlert(w http.ResponseWriter, r *http.Request) {
 	response.Success(alert).Write(w)
 }
 
+// RegisterAlertSource handles POST /api/alerts/sources/register
+func (h *AlertHandler) RegisterAlertSource(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(405, "method not allowed").Write(w)
+		return
+	}
+
+	var req struct {
+		Source string `json:"source"`
+	}
+	if err := jsonutil.ReadJSON(r, &req); err != nil {
+		response.Error(400, fmt.Sprintf("invalid request: %v", err)).Write(w)
+		return
+	}
+
+	if req.Source == "" {
+		response.Error(400, "source is required").Write(w)
+		return
+	}
+
+	h.service.RegisterSource(req.Source)
+	response.Success(map[string]string{"source": req.Source, "status": "registered"}).Write(w)
+}
+
 // QueryAlerts handles GET /api/alerts
 func (h *AlertHandler) QueryAlerts(w http.ResponseWriter, r *http.Request) {
 	req := model.DefaultQueryAlertsRequest()
@@ -205,6 +229,7 @@ func (h *AlertHandler) RegisterRoutes(mux *http.ServeMux) {
 			response.Error(405, "method not allowed").Write(w)
 		}
 	})
+	mux.HandleFunc("/api/alerts/sources/register", h.RegisterAlertSource)
 	mux.HandleFunc("/api/alerts/recent", h.ListRecentAlerts)
 	mux.HandleFunc("/api/alerts/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path

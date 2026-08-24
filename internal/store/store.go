@@ -32,6 +32,8 @@ type LogStore interface {
 	Statistics(ctx context.Context, from, to time.Time) (*LogStatistics, error)
 	// HourlyBreakdown returns log counts broken down by hour.
 	HourlyBreakdown(ctx context.Context, from, to time.Time) ([]HourlyCount, error)
+	// RegisterSource registers a valid source for log entries.
+	RegisterSource(source string)
 	// Close releases resources held by the store.
 	Close() error
 }
@@ -106,6 +108,8 @@ type AlertStore interface {
 	Delete(ctx context.Context, id string) error
 	// DeleteOld removes alerts older than the specified time.
 	DeleteOld(ctx context.Context, before time.Time) (int64, error)
+	// RegisterSource registers a valid source for alert events.
+	RegisterSource(source string)
 	// Close releases resources held by the store.
 	Close() error
 }

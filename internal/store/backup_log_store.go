@@ -248,6 +248,12 @@ func (s *BackupLogStore) HourlyBreakdown(ctx context.Context, from, to time.Time
 	return result, nil
 }
 
+// RegisterSource registers a valid source for log entries.
+func (s *BackupLogStore) RegisterSource(source string) {
+	s.primary.RegisterSource(source)
+	s.backup.RegisterSource(source)
+}
+
 // Close releases resources.
 func (s *BackupLogStore) Close() error {
 	s.primary.Close()

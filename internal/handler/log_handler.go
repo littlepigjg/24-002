@@ -43,7 +43,6 @@ func (h *LogHandler) CreateLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate
 	errors := req.Validate()
 	if len(errors) > 0 {
 		response.Error(400, strings.Join(errors, "; ")).Write(w)
@@ -58,6 +57,30 @@ func (h *LogHandler) CreateLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(entry).Write(w)
+}
+
+// RegisterSource handles POST /api/logs/sources/register
+func (h *LogHandler) RegisterSource(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(405, "method not allowed").Write(w)
+		return
+	}
+
+	var req struct {
+		Source string `json:"source"`
+	}
+	if err := jsonutil.ReadJSON(r, &req); err != nil {
+		response.Error(400, fmt.Sprintf("invalid request: %v", err)).Write(w)
+		return
+	}
+
+	if req.Source == "" {
+		response.Error(400, "source is required").Write(w)
+		return
+	}
+
+	h.service.RegisterSource(req.Source)
+	response.Success(map[string]string{"source": req.Source, "status": "registered"}).Write(w)
 }
 
 // CreateLogs handles POST /api/logs/batch
@@ -231,6 +254,7 @@ func (h *LogHandler) RegisterRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("/api/logs/batch", h.CreateLogs)
 	mux.HandleFunc("/api/logs/sources", h.ListSources)
+	mux.HandleFunc("/api/logs/sources/register", h.RegisterSource)
 	mux.HandleFunc("/api/logs/services", h.ListServices)
 	mux.HandleFunc("/api/logs/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
