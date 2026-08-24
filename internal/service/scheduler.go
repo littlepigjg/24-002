@@ -12,35 +12,22 @@ import (
 	"logalert/pkg/logger"
 )
 
-// Scheduler handles periodic rule scanning and alert triggering.
 type Scheduler interface {
-	// Start begins the periodic scanning.
-	Start(ctx context.Context) error
-	// Stop halts the periodic scanning.
+	Start(ctx context.Context, wg *sync.WaitGroup) error
 	Stop()
-	// ScanOnce performs a single scan of all active rules.
 	ScanOnce(ctx context.Context) error
-	// GetStatus returns the scheduler status.
 	GetStatus() SchedulerStatus
 }
 
-// SchedulerStatus represents the current state of the scheduler.
 type SchedulerStatus struct {
-	// Running indicates if the scheduler is active.
-	Running bool `json:"running"`
-	// LastScan is the time of the last scan.
-	LastScan *time.Time `json:"last_scan,omitempty"`
-	// NextScan is the expected time of the next scan.
-	NextScan *time.Time `json:"next_scan,omitempty"`
-	// RulesScanned is the number of rules in the last scan.
-	RulesScanned int `json:"rules_scanned"`
-	// AlertsTriggered is the number of alerts triggered in the last scan.
-	AlertsTriggered int `json:"alerts_triggered"`
-	// TotalAlertsTriggered is the total alerts triggered since start.
-	TotalAlertsTriggered int64 `json:"total_alerts_triggered"`
+	Running              bool       `json:"running"`
+	LastScan             *time.Time `json:"last_scan,omitempty"`
+	NextScan             *time.Time `json:"next_scan,omitempty"`
+	RulesScanned         int        `json:"rules_scanned"`
+	AlertsTriggered      int        `json:"alerts_triggered"`
+	TotalAlertsTriggered int64      `json:"total_alerts_triggered"`
 }
 
-// scheduler is the default implementation of Scheduler.
 type scheduler struct {
 	ruleService  RuleService
 	alertService AlertService
@@ -48,14 +35,14 @@ type scheduler struct {
 	config       *config.Config
 	logger       logger.Logger
 
-	mu            sync.Mutex
-	running       bool
-	stopCh        chan struct{}
-	status        SchedulerStatus
-	totalAlerts   int64
+	mu       sync.Mutex
+	running  bool
+	stopCh   chan struct{}
+	status   SchedulerStatus
+	totalAlerts int64
+	startWg  *sync.WaitGroup
 }
 
-// NewScheduler creates a new Scheduler.
 func NewScheduler(rs RuleService, as AlertService, ls store.LogStore, cfg *config.Config, log logger.Logger) Scheduler {
 	return &scheduler{
 		ruleService:  rs,
@@ -67,8 +54,7 @@ func NewScheduler(rs RuleService, as AlertService, ls store.LogStore, cfg *confi
 	}
 }
 
-// Start begins the periodic scanning.
-func (s *scheduler) Start(ctx context.Context) error {
+func (s *scheduler) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -76,15 +62,19 @@ func (s *scheduler) Start(ctx context.Context) error {
 	}
 	s.running = true
 	s.stopCh = make(chan struct{})
+	s.startWg = wg
 	s.mu.Unlock()
 
 	s.logger.Info("scheduler started", "interval", s.config.Scheduler.ScanInterval)
 
+	wg.Add(2)
+
 	go s.runLoop(ctx)
+	go s.cleanupLoop(ctx)
+
 	return nil
 }
 
-// Stop halts the periodic scanning.
 func (s *scheduler) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -98,7 +88,6 @@ func (s *scheduler) Stop() {
 	s.logger.Info("scheduler stopped")
 }
 
-// ScanOnce performs a single scan of all active rules.
 func (s *scheduler) ScanOnce(ctx context.Context) error {
 	rules, err := s.ruleService.ListActiveRules(ctx)
 	if err != nil {
@@ -133,15 +122,15 @@ func (s *scheduler) ScanOnce(ctx context.Context) error {
 	return nil
 }
 
-// GetStatus returns the scheduler status.
 func (s *scheduler) GetStatus() SchedulerStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.status
 }
 
-// runLoop is the main scheduling loop.
 func (s *scheduler) runLoop(ctx context.Context) {
+	defer s.startWg.Done()
+
 	scanInterval := s.config.Scheduler.ScanInterval
 	if scanInterval <= 0 {
 		scanInterval = 30 * time.Second
@@ -150,7 +139,6 @@ func (s *scheduler) runLoop(ctx context.Context) {
 	ticker := time.NewTicker(scanInterval)
 	defer ticker.Stop()
 
-	// Perform initial scan
 	if err := s.ScanOnce(ctx); err != nil {
 		s.logger.Error("initial scan failed", "error", err)
 	}
@@ -180,14 +168,62 @@ func (s *scheduler) runLoop(ctx context.Context) {
 	}
 }
 
-// evaluateRule evaluates a single rule against recent log entries.
-// Returns true if an alert was triggered.
+func (s *scheduler) cleanupLoop(ctx context.Context) {
+	cleanupInterval := 1 * time.Minute
+	alertRetention := 24 * time.Hour
+	logRetention := 7 * 24 * time.Hour
+	maxRetries := 3
+
+	ticker := time.NewTicker(cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.stopCh:
+			s.logger.Info("cleanup loop exiting on stop signal")
+			return
+		case <-ctx.Done():
+			s.logger.Info("cleanup loop exiting on context cancellation")
+			return
+		case <-ticker.C:
+			var lastErr error
+			for attempt := 0; attempt < maxRetries; attempt++ {
+				if attempt > 0 {
+					s.logger.Warn("retrying cleanup", "attempt", attempt+1, "error", lastErr)
+					time.Sleep(time.Duration(attempt) * time.Second)
+				}
+
+				alertCutoff := time.Now().Add(-alertRetention)
+				deletedAlerts, err := s.alertService.GetAlertStore().DeleteOld(ctx, alertCutoff)
+				if err != nil {
+					lastErr = fmt.Errorf("alert cleanup failed: %w", err)
+					continue
+				}
+				s.logger.Debug("old alerts cleaned", "count", deletedAlerts)
+
+				logCutoff := time.Now().Add(-logRetention)
+				deletedLogs, err := s.logStore.DeleteExpired(ctx, logCutoff)
+				if err != nil {
+					lastErr = fmt.Errorf("log cleanup failed: %w", err)
+					continue
+				}
+				s.logger.Debug("expired logs cleaned", "count", deletedLogs)
+
+				s.logger.Info("cleanup cycle completed", "alerts_deleted", deletedAlerts, "logs_deleted", deletedLogs)
+				s.startWg.Done()
+				return
+			}
+
+			s.logger.Error("cleanup failed after retries", "error", lastErr)
+		}
+	}
+}
+
 func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now time.Time) (bool, error) {
 	if !rule.CanFire(now) {
 		return false, nil
 	}
 
-	// Build filter based on rule condition
 	filter := &model.LogFilter{
 		Levels:   nil,
 		Sources:  nil,
@@ -195,33 +231,27 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 		Keywords: rule.Condition.Keywords,
 	}
 
-	// Set time range
 	from := now.Add(-rule.Window)
 	filter.StartTime = &from
 	filter.EndTime = &now
 
-	// Apply source filter
 	if rule.Condition.Source != "" {
 		filter.Sources = []string{rule.Condition.Source}
 	}
 
-	// Apply level filter
 	if rule.Condition.Level != "" {
 		filter.Levels = []model.LogLevel{rule.Condition.Level}
 	}
 
-	// Count matching logs
 	count, err := s.logStore.Count(ctx, filter)
 	if err != nil {
 		return false, fmt.Errorf("failed to count logs for rule %s: %w", rule.ID, err)
 	}
 
-	// Check threshold
 	if float64(count) < rule.Threshold {
 		return false, nil
 	}
 
-	// Trigger alert
 	alert := model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)
 	alert.Details["count"] = count
 	alert.Details["window"] = rule.Window.String()

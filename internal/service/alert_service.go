@@ -31,6 +31,8 @@ type AlertService interface {
 	GetOpenAlerts(ctx context.Context) ([]*model.AlertEvent, error)
 	// RecordAlert records a new alert event.
 	RecordAlert(ctx context.Context, alert *model.AlertEvent) error
+	// GetAlertStore returns the underlying alert store.
+	GetAlertStore() store.AlertStore
 }
 
 // alertService is the default implementation of AlertService.
