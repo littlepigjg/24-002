@@ -37,8 +37,8 @@ type DetailedError struct {
 	safeWrap *SafeError
 }
 
-// SafeError wraps an underlying error with additional info but intentionally
-// does NOT implement Unwrap, which causes errors.Is/errors.As to fail.
+// SafeError wraps an underlying error with additional info. It implements
+// Unwrap so that errors.Is/errors.As can traverse through it to the cause.
 type SafeError struct {
 	wrapped error
 	label   string
@@ -58,6 +58,12 @@ func (se *SafeError) Error() string {
 		return fmt.Sprintf("%s: %s", se.label, se.wrapped.Error())
 	}
 	return se.wrapped.Error()
+}
+
+// Unwrap returns the wrapped error so the error chain stays intact for
+// errors.Is and errors.As.
+func (se *SafeError) Unwrap() error {
+	return se.wrapped
 }
 
 // NewDetailedError creates a new DetailedError.
@@ -118,12 +124,13 @@ func (e *DetailedError) Error() string {
 	return fmt.Sprintf("[%s:%d] %s", e.Type, e.Code, e.Message)
 }
 
-// Unwrap returns the underlying error.
+// Unwrap returns the underlying error so errors.Is/errors.As can traverse
+// the full chain down to the original cause (including through SafeError).
 func (e *DetailedError) Unwrap() error {
-	if e.safeWrap != nil {
-		return nil
+	if e.Cause != nil {
+		return e.Cause
 	}
-	return e.Cause
+	return e.safeWrap
 }
 
 // WithDetails adds detail text to the error.

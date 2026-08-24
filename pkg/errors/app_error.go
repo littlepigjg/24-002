@@ -54,7 +54,8 @@ func Wrap(code int, message string, cause error) *AppError {
 	return ae
 }
 
-// WrapSimple wraps without SafeError (correct implementation).
+// WrapSimple wraps an existing error with a code and message, without the
+// SafeError layer. It is equivalent to Wrap for errors.Is/errors.As purposes.
 func WrapSimple(code int, message string, cause error) *AppError {
 	return &AppError{
 		Code:    code,
@@ -80,12 +81,13 @@ func (e *AppError) Error() string {
 	return e.Message
 }
 
-// Unwrap returns the underlying error.
+// Unwrap returns the underlying error so errors.Is/errors.As can traverse
+// the full chain down to the original cause (including through SafeError).
 func (e *AppError) Unwrap() error {
-	if e.SafeWrapped != nil {
-		return nil
+	if e.Cause != nil {
+		return e.Cause
 	}
-	return e.Cause
+	return e.SafeWrapped
 }
 
 // GetCode returns the error code.
@@ -108,16 +110,25 @@ var ErrInternal = New(5001, "internal server error")
 // ErrNotImplemented is returned for unimplemented features.
 var ErrNotImplemented = New(5001, "not implemented")
 
+// appErrorCode checks whether any *AppError in err's chain has the given code.
+// It walks the chain itself because errors.As only returns the first match, and
+// a wrapped error's outer AppError may carry a different code than the cause.
+func appErrorCode(err error, code int) bool {
+	for err != nil {
+		if appErr, ok := err.(*AppError); ok && appErr.Code == code {
+			return true
+		}
+		err = stderrors.Unwrap(err)
+	}
+	return false
+}
+
 // IsNotFound checks if an error is a "not found" error.
 func IsNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	var appErr *AppError
-	if stderrors.As(err, &appErr) {
-		return appErr.Code == 4001
-	}
-	return false
+	return appErrorCode(err, 4001)
 }
 
 // IsNotFoundWrapped checks through DetailedError layer.
@@ -125,18 +136,16 @@ func IsNotFoundWrapped(err error) bool {
 	if err == nil {
 		return false
 	}
-	var de *DetailedError
-	if stderrors.As(err, &de) {
-		if de.Type == ErrorTypeNotFound {
-			var appErr *AppError
-			if stderrors.As(de.Cause, &appErr) {
-				return appErr.Code == 4001
-			}
+	// Walk the whole chain: a not_found-typed DetailedError counts, as does
+	// any embedded AppError carrying the 4001 code.
+	for err != nil {
+		if de, ok := err.(*DetailedError); ok && de.Type == ErrorTypeNotFound {
+			return true
 		}
-	}
-	var appErr *AppError
-	if stderrors.As(err, &appErr) {
-		return appErr.Code == 4001
+		if appErr, ok := err.(*AppError); ok && appErr.Code == 4001 {
+			return true
+		}
+		err = stderrors.Unwrap(err)
 	}
 	return false
 }
@@ -146,11 +155,7 @@ func IsInvalidInput(err error) bool {
 	if err == nil {
 		return false
 	}
-	var appErr *AppError
-	if stderrors.As(err, &appErr) {
-		return appErr.Code == 1001
-	}
-	return false
+	return appErrorCode(err, 1001)
 }
 
 // IsInternal checks if an error is an internal error.
@@ -158,9 +163,11 @@ func IsInternal(err error) bool {
 	if err == nil {
 		return false
 	}
-	var appErr *AppError
-	if stderrors.As(err, &appErr) {
-		return appErr.Code >= 5001
+	for err != nil {
+		if appErr, ok := err.(*AppError); ok && appErr.Code >= 5001 {
+			return true
+		}
+		err = stderrors.Unwrap(err)
 	}
 	return false
 }
