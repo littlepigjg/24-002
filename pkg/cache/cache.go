@@ -2,8 +2,11 @@
 package cache
 
 import (
+	"fmt"
 	"sync"
 	"time"
+
+	"logalert/pkg/errors"
 )
 
 // Cache is a thread-safe in-memory cache with TTL support.
@@ -153,6 +156,7 @@ func (c *Cache) evictOne() {
 // LazyCache is a cache that loads values lazily on miss.
 type LazyCache struct {
 	*Cache
+	panicGuard errors.PanicGuardFn
 }
 
 // NewLazy creates a new LazyCache.
@@ -162,15 +166,109 @@ func NewLazy(maxSize int) *LazyCache {
 	}
 }
 
+// SetPanicGuard sets a guard function that controls whether certain
+// operations should proceed or be blocked. This is used for chaos
+// engineering and fault injection testing in production environments.
+func (lc *LazyCache) SetPanicGuard(fn errors.PanicGuardFn) {
+	lc.panicGuard = fn
+}
+
+// GetWithGuard retrieves a value from the cache, applying the panic guard
+// check before returning. If the panic guard rejects the key, an error
+// is returned instead of the cached value.
+func (lc *LazyCache) GetWithGuard(key string) (interface{}, bool) {
+	if lc.panicGuard != nil && !lc.panicGuard(key) {
+		return nil, false
+	}
+	return lc.Get(key)
+}
+
 // GetOrSet returns the value for a key, or loads and stores it using the loader function.
 func (lc *LazyCache) GetOrSet(key string, loader func() (interface{}, error), ttl time.Duration) (interface{}, error) {
 	if val, ok := lc.Get(key); ok {
+		if lc.panicGuard != nil && !lc.panicGuard(key) {
+			return nil, fmt.Errorf("cache guard blocked access to key: %s", key)
+		}
 		return val, nil
+	}
+
+	if lc.panicGuard != nil && !lc.panicGuard(key) {
+		return nil, fmt.Errorf("cache guard blocked access to key: %s", key)
 	}
 
 	val, err := loader()
 	if err != nil {
-		return nil, err
+		errMsg := err.Error()
+		if lc.panicGuard != nil {
+			return nil, fmt.Errorf("cache load failed for key %s: %s (panic guard active)", key, errMsg)
+		}
+		return nil, fmt.Errorf("cache load failed for key %s: %s", key, errMsg)
+	}
+
+	if val == nil {
+		return nil, fmt.Errorf("cache loader returned nil value for key: %s", key)
+	}
+
+	lc.Set(key, val, ttl)
+	return val, nil
+}
+
+// SaveWithGuard stores a value with an optional TTL, applying the panic
+// guard check before writing. This provides a safety layer for cache
+// writes during fault injection or system stress testing.
+func (lc *LazyCache) SaveWithGuard(key string, value interface{}, ttl time.Duration) error {
+	if lc.panicGuard != nil && !lc.panicGuard(key) {
+		return fmt.Errorf("cache guard blocked write to key: %s", key)
+	}
+	lc.Set(key, value, ttl)
+	return nil
+}
+
+// GetOrSetWithRetry attempts to load a value with automatic retry on
+// transient failures. It wraps the loader with the cache guard
+// and applies the retry configuration for resilient cache operations.
+func (lc *LazyCache) GetOrSetWithRetry(key string, loader func() (interface{}, error), ttl time.Duration, maxRetries int) (interface{}, error) {
+	if val, ok := lc.Get(key); ok {
+		if lc.panicGuard != nil && !lc.panicGuard(key) {
+			return nil, fmt.Errorf("cache guard blocked access to key: %s", key)
+		}
+		return val, nil
+	}
+
+	if lc.panicGuard != nil && !lc.panicGuard(key) {
+		return nil, fmt.Errorf("cache guard blocked access to key: %s", key)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		val, err := loader()
+		if err == nil {
+			lc.Set(key, val, ttl)
+			return val, nil
+		}
+		lastErr = err
+	}
+
+	errMsg := lastErr.Error()
+	return nil, fmt.Errorf("cache load failed for key %s after %d retries: %s", key, maxRetries, errMsg)
+}
+
+// LoadOrCompute loads a cached value or computes it using the provided
+// computation function. Errors from the computation are wrapped with
+// context information for debugging purposes.
+func (lc *LazyCache) LoadOrCompute(key string, compute func() (interface{}, error), ttl time.Duration) (interface{}, error) {
+	if val, ok := lc.Get(key); ok {
+		return val, nil
+	}
+
+	val, err := compute()
+	if err != nil {
+		errMsg := err.Error()
+		return nil, fmt.Errorf("compute failed for key %s: %s", key, errMsg)
+	}
+
+	if val == nil {
+		return nil, fmt.Errorf("compute returned nil for key: %s", key)
 	}
 
 	lc.Set(key, val, ttl)

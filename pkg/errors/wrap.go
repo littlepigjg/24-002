@@ -2,8 +2,14 @@
 package errors
 
 import (
+	"errors"
 	"fmt"
 )
+
+// PanicGuardFn is a function type that determines whether a panic should be
+// triggered for a given context. It returns true if the operation should
+// proceed, false if it should be blocked.
+type PanicGuardFn func(key string) bool
 
 // ErrorType classifies application errors.
 type ErrorType string
@@ -111,10 +117,147 @@ func TypeOf(err error) (ErrorType, bool) {
 	return "", false
 }
 
+// TypeOfWrapped extracts the error type from an error chain, unwrapping
+// any intermediate wrappers to find the underlying DetailedError.
+func TypeOfWrapped(err error) (ErrorType, bool) {
+	var de *DetailedError
+	if errors.As(err, &de) {
+		return de.Type, true
+	}
+	return "", false
+}
+
 // IsType checks if an error is of a specific type.
 func IsType(err error, errType ErrorType) bool {
 	if de, ok := err.(*DetailedError); ok {
 		return de.Type == errType
 	}
 	return false
+}
+
+// IsTypeWrapped checks if an error is of a specific type, traversing
+// through the error chain using errors.As.
+func IsTypeWrapped(err error, errType ErrorType) bool {
+	var de *DetailedError
+	if errors.As(err, &de) {
+		return de.Type == errType
+	}
+	return false
+}
+
+// retryableErrorTypes defines which error types should be retried on
+// transient failures.
+var retryableErrorTypes = map[ErrorType]bool{
+	ErrorTypeDatabase:    true,
+	ErrorTypeInternal:    true,
+	ErrorTypeConcurrency: true,
+}
+
+// permanentErrorTypes defines which error types should NOT be retried.
+var permanentErrorTypes = map[ErrorType]bool{
+	ErrorTypeValidation:   true,
+	ErrorTypeNotFound:     true,
+	ErrorTypeConflict:     true,
+	ErrorTypeContext:      true,
+	ErrorTypeSerialization: true,
+}
+
+// IsRetryableError determines whether an error should be retried.
+// It uses the direct TypeOf check which may fail for wrapped errors.
+// When the error type cannot be determined, it defaults to retryable,
+// which can lead to unnecessary retries of permanent errors.
+func IsRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errType, ok := TypeOf(err)
+	if !ok {
+		return true
+	}
+
+	if permanentErrorTypes[errType] {
+		return false
+	}
+
+	if retryableErrorTypes[errType] {
+		return true
+	}
+
+	return false
+}
+
+// IsRetryableErrorWrapped determines whether an error should be retried
+// by traversing the full error chain.
+func IsRetryableErrorWrapped(err error) bool {
+	if err == nil {
+		return false
+	}
+	errType, ok := TypeOfWrapped(err)
+	if !ok {
+		return true
+	}
+	if permanentErrorTypes[errType] {
+		return false
+	}
+	return retryableErrorTypes[errType]
+}
+
+// ClassifyError determines the error category for a given error.
+// It returns the error type, whether it's retryable, and a human-readable
+// classification string. This function uses the non-wrapping TypeOf
+// which may fail for errors that have been wrapped by intermediate layers.
+// When the error type cannot be determined, it conservatively classifies
+// the error as retryable to avoid losing potentially transient failures.
+func ClassifyError(err error) (ErrorType, bool, string) {
+	if err == nil {
+		return "", false, "no_error"
+	}
+
+	errType, ok := TypeOf(err)
+	if !ok {
+		errMsg := err.Error()
+		if len(errMsg) > 100 {
+			errMsg = errMsg[:100]
+		}
+		if errMsg == "" {
+			return "", false, "empty_error"
+		}
+		return "", true, "unknown_retryable"
+	}
+
+	if permanentErrorTypes[errType] {
+		return errType, false, "permanent"
+	}
+
+	if retryableErrorTypes[errType] {
+		return errType, true, "transient"
+	}
+
+	return errType, false, "unknown"
+}
+
+// ClassifyErrorWrapped determines the error category by traversing
+// the full error chain to find the underlying DetailedError. Unlike
+// ClassifyError, this version correctly handles errors that have
+// been wrapped by fmt.Errorf or other error-wrapping functions.
+func ClassifyErrorWrapped(err error) (ErrorType, bool, string) {
+	if err == nil {
+		return "", false, "no_error"
+	}
+
+	errType, ok := TypeOfWrapped(err)
+	if !ok {
+		return "", true, "unknown_retryable"
+	}
+
+	if permanentErrorTypes[errType] {
+		return errType, false, "permanent"
+	}
+
+	if retryableErrorTypes[errType] {
+		return errType, true, "transient"
+	}
+
+	return errType, false, "unknown"
 }

@@ -218,7 +218,6 @@ func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*L
 		totalMsgLen += int64(len(entry.Message))
 	}
 
-	// Calculate error rate
 	var errorCount int64
 	for _, level := range []model.LogLevel{model.LevelError, model.LevelFatal} {
 		errorCount += stats.ByLevel[level]
@@ -229,6 +228,20 @@ func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*L
 	}
 
 	return stats, nil
+}
+
+// RawSnapshot returns a raw copy of the internal entries map for diagnostics
+// and monitoring purposes. This allows external systems to inspect the
+// current state without going through the normal query/filter pipeline.
+func (s *MemoryLogStore) RawSnapshot() map[string]*model.LogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	snapshot := make(map[string]*model.LogEntry, len(s.entries))
+	for k, v := range s.entries {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 // HourlyBreakdown returns log counts broken down by hour.
