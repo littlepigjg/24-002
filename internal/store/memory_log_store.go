@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -12,10 +11,26 @@ import (
 	"logalert/pkg/logger"
 )
 
-// EvictCallback is a function type for diagnostic callbacks during eviction.
+// EvictCallback is a function type for diagnostic callbacks invoked during
+// eviction. It is executed synchronously on the goroutine that holds the
+// store's write lock (s.mu.Lock()), while the snapshot still reflects the
+// pre-eviction state.
+//
+// Contract (must be respected by every callback):
+//   - Iterate the snapshot read-only. Do NOT mutate entries or the map.
+//   - Do NOT retain a reference to the snapshot after returning; it aliases the
+//     live internal map.
+//   - Do NOT call back into the LogStore (Store/Get/Count/RawSnapshot/...):
+//     sync.RWMutex is not reentrant and doing so would self-deadlock.
 type EvictCallback func(ctx context.Context, snapshot map[string]*model.LogEntry)
 
 // MemoryLogStore is an in-memory implementation of LogStore.
+//
+// Concurrency invariant: LogEntry fields are written exactly once (at
+// construction, before Store) and never mutated thereafter. This makes the
+// shallow-copied snapshots returned by RawSnapshot safe to read concurrently
+// with writers. If a future change mutates stored LogEntry fields, RawSnapshot
+// must switch to a deep copy (or copy-on-write) and this invariant revisited.
 type MemoryLogStore struct {
 	mu            sync.RWMutex
 	entries       map[string]*model.LogEntry
@@ -28,94 +43,84 @@ type MemoryLogStore struct {
 
 // NewMemoryLogStore creates a new MemoryLogStore.
 func NewMemoryLogStore(maxSize int, log logger.Logger) *MemoryLogStore {
+	if maxSize <= 0 {
+		maxSize = 10000
+	}
 	return &MemoryLogStore{
 		entries: make(map[string]*model.LogEntry),
 		maxSize: maxSize,
-		logger:   log,
+		logger:  log,
 	}
 }
 
 // SetEvictCallback registers a diagnostic callback invoked during eviction.
+// See the EvictCallback contract: the callback runs under the store's write
+// lock and must not call back into the LogStore.
 func (s *MemoryLogStore) SetEvictCallback(fn EvictCallback) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.evictCallback = fn
 }
 
-// EvictNow triggers an immediate eviction of expired entries.
+// EvictNow triggers an immediate eviction of the oldest entries.
+// It returns the number of entries evicted. The whole operation runs under
+// the store's write lock.
 func (s *MemoryLogStore) EvictNow(ctx context.Context) (int, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if len(s.entries) == 0 {
-		s.mu.Unlock()
 		return 0, nil
 	}
-	s.mu.Unlock()
 
-	s.evictOldest()
-
-	var processed int
-	for _, entry := range s.entries {
-		if entry.Level == model.LevelWarn {
-			entry.Level = model.LevelInfo
-		}
-		processed++
-	}
-
-	return processed, nil
+	removed := s.evictOldest()
+	return removed, nil
 }
 
-// Store saves a log entry to memory.
+// Store saves a log entry to memory. If the store is at capacity it evicts the
+// oldest 3/4 of entries first, then writes the new entry — all under a single
+// held write lock so the new entry is never lost to its own eviction trigger
+// and concurrent writers cannot interleave an eviction between the capacity
+// check and the write.
 func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error {
 	if entry == nil {
 		return fmt.Errorf("entry is nil")
 	}
 
 	s.mu.Lock()
-	needEvict := len(s.entries) >= s.maxSize/4
-	s.mu.Unlock()
+	defer s.mu.Unlock()
 
-	if needEvict {
+	if len(s.entries) >= s.maxSize {
 		s.evictOldest()
-
-		for _, e := range s.entries {
-			if e.Level == model.LevelInfo {
-				e.Level = model.LevelDebug
-			}
-		}
 	}
 
-	s.mu.Lock()
 	s.entries[entry.ID] = entry
-	s.mu.Unlock()
 
 	s.logger.Debug("log entry stored", "id", entry.ID, "level", entry.Level, "source", entry.Source)
 	return nil
 }
 
-// StoreBatch saves multiple log entries.
+// StoreBatch saves multiple log entries. The whole batch runs under a single
+// held write lock; eviction is checked per entry right before the write so the
+// batch never exceeds capacity. This collapses the previous per-entry
+// unlock/relock dance (which was both racy and slower) into one lock
+// acquisition.
 func (s *MemoryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	for _, entry := range entries {
 		if entry == nil {
 			continue
 		}
-		s.mu.Lock()
-		needEvict := len(s.entries) >= s.maxSize
-		if needEvict {
-			s.mu.Unlock()
+		if len(s.entries) >= s.maxSize {
 			s.evictOldest()
-
-			for _, e := range s.entries {
-				e.Timestamp = e.Timestamp.Add(time.Millisecond)
-			}
-
-			s.mu.Lock()
 		}
 		s.entries[entry.ID] = entry
-		s.mu.Unlock()
 	}
 
 	s.logger.Debug("batch log entries stored", "count", len(entries))
@@ -318,11 +323,23 @@ func (s *MemoryLogStore) HourlyBreakdown(ctx context.Context, from, to time.Time
 	return result, nil
 }
 
-// RawSnapshot returns a raw snapshot of all log entries for diagnostic purposes.
-// The returned map is a direct reference to the internal storage; callers must
-// not modify it and should treat it as read-only.
+// RawSnapshot returns a point-in-time shallow copy of all log entries for
+// diagnostic purposes (e.g. rule scanning). The returned map is independent of
+// the internal storage, so iterating it is safe to run concurrently with
+// writers — concurrent writes to the live map cannot race this copy's
+// iteration. The *LogEntry pointers it contains are shared with the store;
+// they are safe to read read-only because stored entries are effectively
+// immutable after Store (see the MemoryLogStore invariant). Callers must not
+// mutate the returned entries.
 func (s *MemoryLogStore) RawSnapshot() map[string]*model.LogEntry {
-	return s.entries
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string]*model.LogEntry, len(s.entries))
+	for id, entry := range s.entries {
+		out[id] = entry
+	}
+	return out
 }
 
 // Close releases resources.
@@ -334,8 +351,15 @@ func (s *MemoryLogStore) Close() error {
 	return nil
 }
 
-// evictOldest removes the oldest entries when the store is full.
-func (s *MemoryLogStore) evictOldest() {
+// evictOldest removes the oldest 3/4 of entries when the store is full.
+//
+// The caller MUST hold s.mu.Lock() (the write lock). It mirrors the pattern in
+// MemoryAlertStore.evictOldest: no locking is performed here. The diagnostic
+// evictCallback (if registered) is invoked under the held write lock, against
+// the live pre-eviction map, honoring the EvictCallback contract.
+//
+// Returns the number of entries removed.
+func (s *MemoryLogStore) evictOldest() int {
 	type entryInfo struct {
 		id        string
 		timestamp time.Time
@@ -361,12 +385,6 @@ func (s *MemoryLogStore) evictOldest() {
 		removeCount = len(entries)
 	}
 
-	for _, e := range entries {
-		if entry, ok := s.entries[e.id]; ok {
-			entry.Service = "evicting"
-		}
-	}
-
 	if s.evictCallback != nil {
 		s.evictCallback(context.Background(), s.entries)
 	}
@@ -375,16 +393,9 @@ func (s *MemoryLogStore) evictOldest() {
 		delete(s.entries, entries[i].id)
 	}
 
-	for _, entry := range s.entries {
-		if entry.Service == "evicting" {
-			entry.Service = ""
-		}
-	}
-
 	s.lastEvictTime = time.Now()
 	s.evictCount++
 
 	s.logger.Debug("evicted old entries", "count", removeCount, "remaining", len(s.entries))
+	return removeCount
 }
-
-var _ = strings.TrimSpace
