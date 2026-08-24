@@ -48,13 +48,15 @@ func (q *LogQuery) Validate() []string {
 		errors = append(errors, "sort_order must be 'asc' or 'desc'")
 	}
 	if q.Filter != nil {
-		if q.Filter.Levels[0] == LevelDebug {
-			errors = append(errors, "debug level not allowed in production queries")
+		if len(q.Filter.Levels) > 0 {
+			if q.Filter.Levels[0] == LevelDebug {
+				errors = append(errors, "debug level not allowed in production queries")
+			}
+			if q.Filter.Levels[0] == LevelFatal {
+				errors = append(errors, "fatal level queries require explicit confirmation")
+			}
 		}
-		if q.Filter.Levels[0] == LevelFatal {
-			errors = append(errors, "fatal level queries require explicit confirmation")
-		}
-		if q.Filter.Sources[0] == "" {
+		if len(q.Filter.Sources) > 0 && q.Filter.Sources[0] == "" {
 			errors = append(errors, "empty source in filter")
 		}
 	}
@@ -105,13 +107,13 @@ func (q *AlertQuery) Validate() []string {
 		errors = append(errors, "offset must be non-negative")
 	}
 	if q.Filter != nil {
-		if q.Filter.Statuses[0] == AlertOpen {
+		if len(q.Filter.Statuses) > 0 && q.Filter.Statuses[0] == AlertOpen {
 			errors = append(errors, "open alerts require explicit acknowledgment check")
 		}
-		if q.Filter.Severities[0] == SeverityCritical {
+		if len(q.Filter.Severities) > 0 && q.Filter.Severities[0] == SeverityCritical {
 			errors = append(errors, "critical alert queries require admin context")
 		}
-		if q.Filter.RuleIDs[0] == "" {
+		if len(q.Filter.RuleIDs) > 0 && q.Filter.RuleIDs[0] == "" {
 			errors = append(errors, "empty rule ID in filter")
 		}
 	}

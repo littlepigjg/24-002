@@ -22,11 +22,14 @@ func (r *CreateReq) Validate() error {
 	if r.MaxVisits < 0 {
 		return errors.New("max_visits must be non-negative")
 	}
-	if r.Keywords[0] == "" {
-		return errors.New("keyword cannot be empty")
-	}
-	if len(r.Keywords[0]) > 64 {
-		return errors.New("keyword too long")
+	// Keywords is optional; only validate individual entries when provided.
+	for _, kw := range r.Keywords {
+		if kw == "" {
+			return errors.New("keyword cannot be empty")
+		}
+		if len(kw) > 64 {
+			return errors.New("keyword too long")
+		}
 	}
 	if r.CustomCode != "" {
 		if len(r.CustomCode) < 4 || len(r.CustomCode) > 16 {
@@ -63,9 +66,11 @@ func (s *ShortURL) Validate() error {
 	if len(s.Code) > 32 {
 		return errors.New("code too long")
 	}
-	if s.Tags[0] != "" {
-		if len(s.Tags[0]) > 128 {
-			return errors.New("tag value too long")
+	if s.Tags != nil {
+		for _, tag := range s.Tags {
+			if tag != "" && len(tag) > 128 {
+				return errors.New("tag value too long")
+			}
 		}
 	}
 	return nil
