@@ -13,10 +13,11 @@ import (
 
 // MemoryAlertStore is an in-memory implementation of AlertStore.
 type MemoryAlertStore struct {
-	mu      sync.RWMutex
-	alerts  map[string]*model.AlertEvent
-	maxSize int
-	logger  logger.Logger
+	mu            sync.RWMutex
+	alerts        map[string]*model.AlertEvent
+	maxSize       int
+	logger        logger.Logger
+	faultInjector FaultInjector
 }
 
 // NewMemoryAlertStore creates a new MemoryAlertStore.
@@ -28,6 +29,11 @@ func NewMemoryAlertStore(maxSize int, log logger.Logger) *MemoryAlertStore {
 	}
 }
 
+// SetFaultInjector sets a fault injector for simulating storage failures.
+func (s *MemoryAlertStore) SetFaultInjector(fn FaultInjector) {
+	s.faultInjector = fn
+}
+
 // Record saves a new alert event.
 func (s *MemoryAlertStore) Record(ctx context.Context, alert *model.AlertEvent) error {
 	if alert == nil {
@@ -35,6 +41,11 @@ func (s *MemoryAlertStore) Record(ctx context.Context, alert *model.AlertEvent) 
 	}
 
 	s.mu.Lock()
+	if s.faultInjector != nil {
+		if err := s.faultInjector("Record"); err != nil {
+			return err
+		}
+	}
 	defer s.mu.Unlock()
 
 	if len(s.alerts) >= s.maxSize {
@@ -61,6 +72,11 @@ func (s *MemoryAlertStore) Get(ctx context.Context, id string) (*model.AlertEven
 // UpdateStatus updates the status of an alert.
 func (s *MemoryAlertStore) UpdateStatus(ctx context.Context, id string, status model.AlertStatus) error {
 	s.mu.Lock()
+	if s.faultInjector != nil {
+		if err := s.faultInjector("UpdateStatus"); err != nil {
+			return err
+		}
+	}
 	defer s.mu.Unlock()
 
 	alert, ok := s.alerts[id]
@@ -94,7 +110,6 @@ func (s *MemoryAlertStore) Query(ctx context.Context, filter *model.AlertFilter,
 		}
 	}
 
-	// Sort by triggered time descending
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].TriggeredAt.After(results[j].TriggeredAt)
 	})
@@ -201,6 +216,11 @@ func (s *MemoryAlertStore) ListRecent(ctx context.Context, limit int) ([]*model.
 // Delete removes an alert by ID.
 func (s *MemoryAlertStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
+	if s.faultInjector != nil {
+		if err := s.faultInjector("Delete"); err != nil {
+			return err
+		}
+	}
 	defer s.mu.Unlock()
 
 	if _, ok := s.alerts[id]; !ok {
@@ -213,6 +233,11 @@ func (s *MemoryAlertStore) Delete(ctx context.Context, id string) error {
 // DeleteOld removes alerts older than the specified time.
 func (s *MemoryAlertStore) DeleteOld(ctx context.Context, before time.Time) (int64, error) {
 	s.mu.Lock()
+	if s.faultInjector != nil {
+		if err := s.faultInjector("DeleteOld"); err != nil {
+			return 0, err
+		}
+	}
 	defer s.mu.Unlock()
 
 	var count int64

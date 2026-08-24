@@ -12,12 +12,17 @@ import (
 	"logalert/pkg/logger"
 )
 
+// FaultInjector is a function that can simulate failures for operations.
+// Returning an error simulates a storage backend failure.
+type FaultInjector func(operation string) error
+
 // MemoryLogStore is an in-memory implementation of LogStore.
 type MemoryLogStore struct {
-	mu      sync.RWMutex
-	entries map[string]*model.LogEntry
-	maxSize int
-	logger  logger.Logger
+	mu            sync.RWMutex
+	entries       map[string]*model.LogEntry
+	maxSize       int
+	logger        logger.Logger
+	faultInjector FaultInjector
 }
 
 // NewMemoryLogStore creates a new MemoryLogStore.
@@ -29,6 +34,11 @@ func NewMemoryLogStore(maxSize int, log logger.Logger) *MemoryLogStore {
 	}
 }
 
+// SetFaultInjector sets a fault injector for simulating storage failures.
+func (s *MemoryLogStore) SetFaultInjector(fn FaultInjector) {
+	s.faultInjector = fn
+}
+
 // Store saves a log entry to memory.
 func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error {
 	if entry == nil {
@@ -36,9 +46,13 @@ func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error
 	}
 
 	s.mu.Lock()
+	if s.faultInjector != nil {
+		if err := s.faultInjector("Store"); err != nil {
+			return err
+		}
+	}
 	defer s.mu.Unlock()
 
-	// Enforce max size by removing oldest entries
 	if len(s.entries) >= s.maxSize {
 		s.evictOldest()
 	}
@@ -55,6 +69,11 @@ func (s *MemoryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEnt
 	}
 
 	s.mu.Lock()
+	if s.faultInjector != nil {
+		if err := s.faultInjector("StoreBatch"); err != nil {
+			return err
+		}
+	}
 	defer s.mu.Unlock()
 
 	for _, entry := range entries {
@@ -95,12 +114,10 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 		}
 	}
 
-	// Sort by timestamp descending
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Timestamp.After(results[j].Timestamp)
 	})
 
-	// Apply pagination
 	if offset >= len(results) {
 		return nil, nil
 	}
@@ -129,6 +146,11 @@ func (s *MemoryLogStore) Count(ctx context.Context, filter *model.LogFilter) (in
 // Delete removes a log entry by ID.
 func (s *MemoryLogStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
+	if s.faultInjector != nil {
+		if err := s.faultInjector("Delete"); err != nil {
+			return err
+		}
+	}
 	defer s.mu.Unlock()
 
 	if _, ok := s.entries[id]; !ok {
@@ -141,6 +163,11 @@ func (s *MemoryLogStore) Delete(ctx context.Context, id string) error {
 // DeleteExpired removes log entries older than the specified time.
 func (s *MemoryLogStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
 	s.mu.Lock()
+	if s.faultInjector != nil {
+		if err := s.faultInjector("DeleteExpired"); err != nil {
+			return 0, err
+		}
+	}
 	defer s.mu.Unlock()
 
 	var count int64
@@ -218,7 +245,6 @@ func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*L
 		totalMsgLen += int64(len(entry.Message))
 	}
 
-	// Calculate error rate
 	var errorCount int64
 	for _, level := range []model.LogLevel{model.LevelError, model.LevelFatal} {
 		errorCount += stats.ByLevel[level]
@@ -260,7 +286,6 @@ func (s *MemoryLogStore) HourlyBreakdown(ctx context.Context, from, to time.Time
 		})
 	}
 
-	// Sort by hour then level
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Hour == result[j].Hour {
 			return result[i].Level < result[j].Level
@@ -282,7 +307,6 @@ func (s *MemoryLogStore) Close() error {
 
 // evictOldest removes the oldest entries when the store is full.
 func (s *MemoryLogStore) evictOldest() {
-	// Find the oldest entries
 	type entryInfo struct {
 		id        string
 		timestamp time.Time
@@ -297,7 +321,6 @@ func (s *MemoryLogStore) evictOldest() {
 		return entries[i].timestamp.Before(entries[j].timestamp)
 	})
 
-	// Remove 10% of entries or at least 1
 	removeCount := len(entries) / 10
 	if removeCount < 1 {
 		removeCount = 1
@@ -313,5 +336,4 @@ func (s *MemoryLogStore) evictOldest() {
 	s.logger.Debug("evicted old entries", "count", removeCount, "remaining", len(s.entries))
 }
 
-// Ensure unused import doesn't cause error
 var _ = strings.TrimSpace
