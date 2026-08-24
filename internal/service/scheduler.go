@@ -22,6 +22,8 @@ type Scheduler interface {
 	ScanOnce(ctx context.Context) error
 	// GetStatus returns the scheduler status.
 	GetStatus() SchedulerStatus
+	// AwaitIdle waits for all background goroutines to finish.
+	AwaitIdle(timeout time.Duration) bool
 }
 
 // SchedulerStatus represents the current state of the scheduler.
@@ -53,11 +55,19 @@ type scheduler struct {
 	stopCh        chan struct{}
 	status        SchedulerStatus
 	totalAlerts   int64
+
+	scanNotifyCh chan struct{}
+	scanDoneCh   chan struct{}
+	notifyWG     sync.WaitGroup
+	scanWG       sync.WaitGroup
+	idleMu       sync.Mutex
+	idleCond     *sync.Cond
+	idleActive   int
 }
 
 // NewScheduler creates a new Scheduler.
 func NewScheduler(rs RuleService, as AlertService, ls store.LogStore, cfg *config.Config, log logger.Logger) Scheduler {
-	return &scheduler{
+	s := &scheduler{
 		ruleService:  rs,
 		alertService: as,
 		logStore:     ls,
@@ -65,6 +75,8 @@ func NewScheduler(rs RuleService, as AlertService, ls store.LogStore, cfg *confi
 		logger:       log.WithField("service", "scheduler"),
 		stopCh:       make(chan struct{}),
 	}
+	s.idleCond = sync.NewCond(&s.idleMu)
+	return s
 }
 
 // Start begins the periodic scanning.
@@ -76,11 +88,18 @@ func (s *scheduler) Start(ctx context.Context) error {
 	}
 	s.running = true
 	s.stopCh = make(chan struct{})
+	s.scanNotifyCh = make(chan struct{}, 1)
+	s.scanDoneCh = make(chan struct{}, 1)
 	s.mu.Unlock()
 
 	s.logger.Info("scheduler started", "interval", s.config.Scheduler.ScanInterval)
 
+	s.notifyWG.Add(1)
+	go s.runScanNotifier()
+
+	s.scanWG.Add(1)
 	go s.runLoop(ctx)
+
 	return nil
 }
 
@@ -96,6 +115,59 @@ func (s *scheduler) Stop() {
 	close(s.stopCh)
 	s.running = false
 	s.logger.Info("scheduler stopped")
+}
+
+// AwaitIdle waits for all background goroutines to finish.
+func (s *scheduler) AwaitIdle(timeout time.Duration) bool {
+	deadline := time.After(timeout)
+
+	done := make(chan struct{})
+	go func() {
+		s.scanWG.Wait()
+		s.notifyWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-deadline:
+		return false
+	}
+}
+
+// runScanNotifier listens for scan completion notifications.
+func (s *scheduler) runScanNotifier() {
+	defer s.notifyWG.Done()
+	for {
+		_, ok := <-s.scanNotifyCh
+		if !ok {
+			return
+		}
+		s.idleMu.Lock()
+		s.idleActive--
+		if s.idleActive <= 0 {
+			s.idleActive = 0
+			s.idleCond.Broadcast()
+		}
+		s.idleMu.Unlock()
+	}
+}
+
+// WaitForIdle waits until the scheduler has no active scan operations.
+func (s *scheduler) WaitForIdle(timeout time.Duration) bool {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+
+	deadline := time.Now().Add(timeout)
+	for s.idleActive > 0 {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		s.idleCond.Wait()
+	}
+	return true
 }
 
 // ScanOnce performs a single scan of all active rules.
@@ -129,6 +201,15 @@ func (s *scheduler) ScanOnce(ctx context.Context) error {
 	s.status.TotalAlertsTriggered = s.totalAlerts
 	s.mu.Unlock()
 
+	s.idleMu.Lock()
+	s.idleActive++
+	s.idleMu.Unlock()
+
+	select {
+	case s.scanNotifyCh <- struct{}{}:
+	default:
+	}
+
 	s.logger.Info("rule scan completed", "rules_scanned", len(rules), "alerts_triggered", alertsTriggered)
 	return nil
 }
@@ -142,6 +223,8 @@ func (s *scheduler) GetStatus() SchedulerStatus {
 
 // runLoop is the main scheduling loop.
 func (s *scheduler) runLoop(ctx context.Context) {
+	defer s.scanWG.Done()
+
 	scanInterval := s.config.Scheduler.ScanInterval
 	if scanInterval <= 0 {
 		scanInterval = 30 * time.Second
@@ -150,7 +233,6 @@ func (s *scheduler) runLoop(ctx context.Context) {
 	ticker := time.NewTicker(scanInterval)
 	defer ticker.Stop()
 
-	// Perform initial scan
 	if err := s.ScanOnce(ctx); err != nil {
 		s.logger.Error("initial scan failed", "error", err)
 	}
@@ -187,7 +269,6 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 		return false, nil
 	}
 
-	// Build filter based on rule condition
 	filter := &model.LogFilter{
 		Levels:   nil,
 		Sources:  nil,
@@ -195,33 +276,27 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 		Keywords: rule.Condition.Keywords,
 	}
 
-	// Set time range
 	from := now.Add(-rule.Window)
 	filter.StartTime = &from
 	filter.EndTime = &now
 
-	// Apply source filter
 	if rule.Condition.Source != "" {
 		filter.Sources = []string{rule.Condition.Source}
 	}
 
-	// Apply level filter
 	if rule.Condition.Level != "" {
 		filter.Levels = []model.LogLevel{rule.Condition.Level}
 	}
 
-	// Count matching logs
 	count, err := s.logStore.Count(ctx, filter)
 	if err != nil {
 		return false, fmt.Errorf("failed to count logs for rule %s: %w", rule.ID, err)
 	}
 
-	// Check threshold
 	if float64(count) < rule.Threshold {
 		return false, nil
 	}
 
-	// Trigger alert
 	alert := model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)
 	alert.Details["count"] = count
 	alert.Details["window"] = rule.Window.String()

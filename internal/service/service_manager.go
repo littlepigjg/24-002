@@ -3,7 +3,10 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"runtime"
 	"sync"
+	"time"
 
 	"logalert/internal/config"
 	"logalert/pkg/logger"
@@ -102,3 +105,64 @@ func (sm *ServiceManager) GetMetrics() *metrics.Metrics {
 func (sm *ServiceManager) GetConfig() *config.Config {
 	return sm.config
 }
+
+// GoroutineSnapshot captures the current goroutine count.
+type GoroutineSnapshot struct {
+	TotalGoroutines int
+	ServiceName     string
+	Timestamp       time.Time
+}
+
+// DiagnoseGoroutines takes a snapshot of the current goroutine count.
+func (sm *ServiceManager) DiagnoseGoroutines() GoroutineSnapshot {
+	return GoroutineSnapshot{
+		TotalGoroutines: runtime.NumGoroutine(),
+		ServiceName:     "service_manager",
+		Timestamp:       time.Now(),
+	}
+}
+
+// WaitForServiceIdle waits for all registered services that support AwaitIdle to become idle.
+func (sm *ServiceManager) WaitForServiceIdle(timeout time.Duration) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	deadline := time.After(timeout)
+	allIdle := make(chan bool, 1)
+
+	go func() {
+		count := 0
+		var wg sync.WaitGroup
+
+		for name, svc := range sm.services {
+			if awaiter, ok := svc.(interface{ AwaitIdle(time.Duration) bool }); ok {
+				wg.Add(1)
+				count++
+				go func(svcName string, a interface{ AwaitIdle(time.Duration) bool }) {
+					defer wg.Done()
+					if !a.AwaitIdle(timeout) {
+						sm.logger.Warn("service not idle within timeout", "service", svcName)
+					}
+				}(name, awaiter)
+			}
+		}
+
+		if count == 0 {
+			allIdle <- true
+			return
+		}
+
+		wg.Wait()
+		allIdle <- true
+	}()
+
+	select {
+	case <-allIdle:
+		return true
+	case <-deadline:
+		return false
+	}
+}
+
+// Verify imports are used
+var _ = fmt.Sprintf
