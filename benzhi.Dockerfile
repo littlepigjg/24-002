@@ -6,6 +6,11 @@ FROM golang:1.22
 # 设置工作目录
 WORKDIR /app
 
+# 设置 Go 代理
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GONOSUMCHECK=*
+ENV GOFLAGS=-insecure
+
 # 复制 go.mod 和源代码
 COPY go.mod ./
 COPY *.go ./

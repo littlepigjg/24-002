@@ -116,6 +116,18 @@ func (s *logService) QueryLogs(ctx context.Context, req *model.QueryLogsRequest)
 		EndTime:   req.EndTime,
 	}
 
+	var logQuery model.LogQuery
+	logQuery.Filter = filter
+	logQuery.Limit = req.Limit
+	logQuery.Offset = req.Offset
+	logQuery.SortBy = "timestamp"
+	logQuery.SortOrder = "desc"
+
+	if errs := logQuery.Validate(); len(errs) > 0 {
+		s.logger.Warn("query validation failed", "errors", errs)
+		return nil, 0, fmt.Errorf("validation failed: %v", errs)
+	}
+
 	count, err := s.store.Count(ctx, filter)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count logs: %w", err)

@@ -50,6 +50,54 @@ type StorageConfig struct {
 	PersistToFile bool `json:"persist_to_file"`
 	// DataDir is the directory for data persistence.
 	DataDir string `json:"data_dir"`
+	// urlFilePath is the path for URL persistence file.
+	urlFilePath string
+	// logFilePath is the path for access log file.
+	logFilePath string
+	// syncInterval is the interval for syncing data to disk.
+	syncInterval time.Duration
+	// flushOnWrite enables immediate flush on each write.
+	flushOnWrite bool
+}
+
+// URLFilePath sets the URL file path.
+func (s *StorageConfig) URLFilePath(path string) {
+	s.urlFilePath = path
+}
+
+// LogFilePath sets the log file path.
+func (s *StorageConfig) LogFilePath(path string) {
+	s.logFilePath = path
+}
+
+// SyncInterval sets the sync interval.
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+// FlushOnWrite sets whether to flush on each write.
+func (s *StorageConfig) FlushOnWrite(b bool) {
+	s.flushOnWrite = b
+}
+
+// GetURLFilePath returns the URL file path.
+func (s *StorageConfig) GetURLFilePath() string {
+	return s.urlFilePath
+}
+
+// GetLogFilePath returns the log file path.
+func (s *StorageConfig) GetLogFilePath() string {
+	return s.logFilePath
+}
+
+// GetSyncInterval returns the sync interval.
+func (s *StorageConfig) GetSyncInterval() time.Duration {
+	return s.syncInterval
+}
+
+// GetFlushOnWrite returns whether to flush on each write.
+func (s *StorageConfig) GetFlushOnWrite() bool {
+	return s.flushOnWrite
 }
 
 // AlertConfig holds alert rule configuration.
@@ -82,6 +130,11 @@ type SchedulerConfig struct {
 	MaxConcurrentScans int `json:"max_concurrent_scans"`
 	// EnableAutoScan enables automatic rule scanning.
 	EnableAutoScan bool `json:"enable_auto_scan"`
+}
+
+// Default returns a Config with sensible defaults.
+func Default() *Config {
+	return DefaultConfig()
 }
 
 // DefaultConfig returns a Config with sensible defaults.

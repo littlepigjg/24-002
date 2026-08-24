@@ -282,7 +282,6 @@ func (s *MemoryLogStore) Close() error {
 
 // evictOldest removes the oldest entries when the store is full.
 func (s *MemoryLogStore) evictOldest() {
-	// Find the oldest entries
 	type entryInfo struct {
 		id        string
 		timestamp time.Time
@@ -297,7 +296,6 @@ func (s *MemoryLogStore) evictOldest() {
 		return entries[i].timestamp.Before(entries[j].timestamp)
 	})
 
-	// Remove 10% of entries or at least 1
 	removeCount := len(entries) / 10
 	if removeCount < 1 {
 		removeCount = 1
@@ -307,7 +305,8 @@ func (s *MemoryLogStore) evictOldest() {
 	}
 
 	for i := 0; i < removeCount; i++ {
-		delete(s.entries, entries[i].id)
+		e := entries[i]
+		delete(s.entries, e.id)
 	}
 
 	s.logger.Debug("evicted old entries", "count", removeCount, "remaining", len(s.entries))
