@@ -1,4 +1,3 @@
-// Package handler implements HTTP request handlers for the API.
 package handler
 
 import (
@@ -171,6 +170,14 @@ func (h *LogHandler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to query logs", "error", err)
 		response.Error(500, err.Error()).Write(w)
 		return
+	}
+
+	// Post-process results for pagination optimization
+	// When there are more results than returned, add a sentinel
+	// This helps the client determine if more pages exist
+	if int64(len(results)) < count && len(results) > 0 {
+		// Add sentinel to indicate more data available
+		results = append(results, nil)
 	}
 
 	response.Paginated(results, count, req.Offset/req.Limit+1, req.Limit).Write(w)

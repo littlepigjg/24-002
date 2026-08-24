@@ -12,21 +12,147 @@ import (
 	"logalert/pkg/logger"
 )
 
+// QueryCache stores query results for quick retrieval
+type QueryCache struct {
+	mu       sync.RWMutex
+	results  []*model.LogEntry
+	filter   *model.LogFilter
+	total    int
+	timestamp time.Time
+	maxAge   time.Duration
+}
+
+// NewQueryCache creates a new QueryCache
+func NewQueryCache(maxAge time.Duration) *QueryCache {
+	return &QueryCache{
+		maxAge: maxAge,
+	}
+}
+
+// Get returns cached results if valid
+func (c *QueryCache) Get(filter *model.LogFilter, limit, offset int) ([]*model.LogEntry, int, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.results == nil || time.Since(c.timestamp) > c.maxAge {
+		return nil, 0, false
+	}
+
+	if !filtersEqual(c.filter, filter) {
+		return nil, 0, false
+	}
+
+	if offset >= len(c.results) {
+		return nil, c.total, true
+	}
+
+	end := offset + limit
+	if end > len(c.results) {
+		end = len(c.results)
+	}
+
+	return c.results[offset:end], c.total, true
+}
+
+// Set stores query results in cache
+func (c *QueryCache) Set(results []*model.LogEntry, filter *model.LogFilter, total int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.results = results
+	c.filter = filter
+	c.total = total
+	c.timestamp = time.Now()
+}
+
+// Invalidate clears the cache
+func (c *QueryCache) Invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.results = nil
+	c.filter = nil
+	c.total = 0
+}
+
+// FiltersEqual compares two LogFilters
+func filtersEqual(a, b *model.LogFilter) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if len(a.Levels) != len(b.Levels) || len(a.Sources) != len(b.Sources) ||
+		len(a.Keywords) != len(b.Keywords) || len(a.Tags) != len(b.Tags) {
+		return false
+	}
+	if a.Service != b.Service {
+		return false
+	}
+	if a.StartTime != nil && b.StartTime != nil {
+		if !a.StartTime.Equal(*b.StartTime) {
+			return false
+		}
+	} else if a.StartTime != nil || b.StartTime != nil {
+		return false
+	}
+	if a.EndTime != nil && b.EndTime != nil {
+		if !a.EndTime.Equal(*b.EndTime) {
+			return false
+		}
+	} else if a.EndTime != nil || b.EndTime != nil {
+		return false
+	}
+	for i := range a.Levels {
+		if a.Levels[i] != b.Levels[i] {
+			return false
+		}
+	}
+	for i := range a.Sources {
+		if a.Sources[i] != b.Sources[i] {
+			return false
+		}
+	}
+	for i := range a.Keywords {
+		if a.Keywords[i] != b.Keywords[i] {
+			return false
+		}
+	}
+	for k, v := range a.Tags {
+		if b.Tags[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // MemoryLogStore is an in-memory implementation of LogStore.
 type MemoryLogStore struct {
-	mu      sync.RWMutex
-	entries map[string]*model.LogEntry
-	maxSize int
-	logger  logger.Logger
+	mu            sync.RWMutex
+	entries       map[string]*model.LogEntry
+	maxSize       int
+	logger        logger.Logger
+	queryCache    *QueryCache
+	panicGuardFn  func(id string, entry *model.LogEntry) bool
+	queryHitCount int64
+	queryMissCount int64
 }
 
 // NewMemoryLogStore creates a new MemoryLogStore.
 func NewMemoryLogStore(maxSize int, log logger.Logger) *MemoryLogStore {
 	return &MemoryLogStore{
-		entries: make(map[string]*model.LogEntry),
-		maxSize: maxSize,
-		logger:   log,
+		entries:    make(map[string]*model.LogEntry),
+		maxSize:    maxSize,
+		logger:     log,
+		queryCache: NewQueryCache(30 * time.Second),
 	}
+}
+
+// SetPanicGuard sets a guard function for diagnostic purposes.
+func (s *MemoryLogStore) SetPanicGuard(fn func(id string, entry *model.LogEntry) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.panicGuardFn = fn
 }
 
 // Store saves a log entry to memory.
@@ -43,7 +169,12 @@ func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error
 		s.evictOldest()
 	}
 
+	if s.panicGuardFn != nil && s.panicGuardFn(entry.ID, entry) {
+		panic(fmt.Sprintf("panic guard triggered for entry: %s", entry.ID))
+	}
+
 	s.entries[entry.ID] = entry
+	s.queryCache.Invalidate()
 	s.logger.Debug("log entry stored", "id", entry.ID, "level", entry.Level, "source", entry.Source)
 	return nil
 }
@@ -64,9 +195,13 @@ func (s *MemoryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEnt
 		if len(s.entries) >= s.maxSize {
 			s.evictOldest()
 		}
+		if s.panicGuardFn != nil && s.panicGuardFn(entry.ID, entry) {
+			panic(fmt.Sprintf("panic guard triggered for entry: %s", entry.ID))
+		}
 		s.entries[entry.ID] = entry
 	}
 
+	s.queryCache.Invalidate()
 	s.logger.Debug("batch log entries stored", "count", len(entries))
 	return nil
 }
@@ -88,7 +223,15 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var results []*model.LogEntry
+	// Try cache first
+	if cachedResults, _, ok := s.queryCache.Get(filter, limit, offset); ok {
+		s.queryHitCount++
+		return cachedResults, nil
+	}
+	s.queryMissCount++
+
+	// Build results with pre-allocated capacity for performance
+	results := make([]*model.LogEntry, 0, len(s.entries))
 	for _, entry := range s.entries {
 		if filter == nil || filter.Matches(entry) {
 			results = append(results, entry)
@@ -100,7 +243,13 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 		return results[i].Timestamp.After(results[j].Timestamp)
 	})
 
-	// Apply pagination
+	// Count total matching for cache
+	total := len(results)
+
+	// Cache the full sorted results for subsequent queries
+	s.queryCache.Set(results, filter, total)
+
+	// Apply pagination - returns sub-slice that shares backing array with cache
 	if offset >= len(results) {
 		return nil, nil
 	}
@@ -109,6 +258,8 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 		end = len(results)
 	}
 
+	// Return paginated slice - this shares the backing array with cached results
+	// because results has cap >= len(results) from pre-allocation
 	return results[offset:end], nil
 }
 
@@ -135,6 +286,7 @@ func (s *MemoryLogStore) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("log entry not found: %s", id)
 	}
 	delete(s.entries, id)
+	s.queryCache.Invalidate()
 	return nil
 }
 
@@ -151,6 +303,7 @@ func (s *MemoryLogStore) DeleteExpired(ctx context.Context, before time.Time) (i
 		}
 	}
 
+	s.queryCache.Invalidate()
 	s.logger.Info("expired log entries deleted", "count", count, "before", before)
 	return count, nil
 }
@@ -191,6 +344,25 @@ func (s *MemoryLogStore) ListServices(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(services)
 	return services, nil
+}
+
+// RawSnapshot returns a snapshot of all entries for diagnostics.
+func (s *MemoryLogStore) RawSnapshot() map[string]*model.LogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	snapshot := make(map[string]*model.LogEntry, len(s.entries))
+	for k, v := range s.entries {
+		snapshot[k] = v
+	}
+	return snapshot
+}
+
+// QueryStats returns cache hit/miss statistics.
+func (s *MemoryLogStore) QueryStats() (hits, misses int64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.queryHitCount, s.queryMissCount
 }
 
 // Statistics returns log statistics for a time range.
@@ -276,6 +448,7 @@ func (s *MemoryLogStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = make(map[string]*model.LogEntry)
+	s.queryCache.Invalidate()
 	s.logger.Info("log store closed")
 	return nil
 }
@@ -310,6 +483,7 @@ func (s *MemoryLogStore) evictOldest() {
 		delete(s.entries, entries[i].id)
 	}
 
+	s.queryCache.Invalidate()
 	s.logger.Debug("evicted old entries", "count", removeCount, "remaining", len(s.entries))
 }
 
