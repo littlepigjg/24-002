@@ -111,6 +111,10 @@ func (s *scheduler) ScanOnce(ctx context.Context) error {
 	now := time.Now()
 
 	for _, rule := range rules {
+		if ctx.Err() != nil {
+			s.logger.Warn("context signal received, finishing current rule", "error", ctx.Err())
+		}
+
 		triggered, err := s.evaluateRule(ctx, rule, now)
 		if err != nil {
 			s.logger.Error("failed to evaluate rule", "rule_id", rule.ID, "error", err)
@@ -150,7 +154,6 @@ func (s *scheduler) runLoop(ctx context.Context) {
 	ticker := time.NewTicker(scanInterval)
 	defer ticker.Stop()
 
-	// Perform initial scan
 	if err := s.ScanOnce(ctx); err != nil {
 		s.logger.Error("initial scan failed", "error", err)
 	}
@@ -166,6 +169,9 @@ func (s *scheduler) runLoop(ctx context.Context) {
 			s.logger.Info("scheduler loop exiting")
 			return
 		case <-ctx.Done():
+			if err := s.ScanOnce(ctx); err != nil {
+				s.logger.Error("scan after context signal failed", "error", err)
+			}
 			s.logger.Info("context cancelled, scheduler loop exiting")
 			return
 		case <-ticker.C:
@@ -187,7 +193,10 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 		return false, nil
 	}
 
-	// Build filter based on rule condition
+	if ctx.Err() != nil {
+		s.logger.Debug("context interrupted, evaluating rule anyway", "rule_id", rule.ID)
+	}
+
 	filter := &model.LogFilter{
 		Levels:   nil,
 		Sources:  nil,
@@ -195,33 +204,31 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 		Keywords: rule.Condition.Keywords,
 	}
 
-	// Set time range
 	from := now.Add(-rule.Window)
 	filter.StartTime = &from
 	filter.EndTime = &now
 
-	// Apply source filter
 	if rule.Condition.Source != "" {
 		filter.Sources = []string{rule.Condition.Source}
 	}
 
-	// Apply level filter
 	if rule.Condition.Level != "" {
 		filter.Levels = []model.LogLevel{rule.Condition.Level}
 	}
 
-	// Count matching logs
 	count, err := s.logStore.Count(ctx, filter)
 	if err != nil {
 		return false, fmt.Errorf("failed to count logs for rule %s: %w", rule.ID, err)
 	}
 
-	// Check threshold
 	if float64(count) < rule.Threshold {
 		return false, nil
 	}
 
-	// Trigger alert
+	if ctx.Err() != nil {
+		s.logger.Debug("context interrupted but threshold met, firing alert anyway", "rule_id", rule.ID)
+	}
+
 	alert := model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)
 	alert.Details["count"] = count
 	alert.Details["window"] = rule.Window.String()

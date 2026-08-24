@@ -14,10 +14,11 @@ import (
 
 // MemoryLogStore is an in-memory implementation of LogStore.
 type MemoryLogStore struct {
-	mu      sync.RWMutex
-	entries map[string]*model.LogEntry
-	maxSize int
-	logger  logger.Logger
+	mu              sync.RWMutex
+	entries         map[string]*model.LogEntry
+	maxSize         int
+	logger          logger.Logger
+	processingDelay time.Duration
 }
 
 // NewMemoryLogStore creates a new MemoryLogStore.
@@ -29,6 +30,12 @@ func NewMemoryLogStore(maxSize int, log logger.Logger) *MemoryLogStore {
 	}
 }
 
+// SetProcessingDelay configures a simulated processing delay for all store operations.
+// This is useful for chaos engineering testing and performance diagnostics.
+func (s *MemoryLogStore) SetProcessingDelay(d time.Duration) {
+	s.processingDelay = d
+}
+
 // Store saves a log entry to memory.
 func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error {
 	if entry == nil {
@@ -38,7 +45,10 @@ func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Enforce max size by removing oldest entries
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
+
 	if len(s.entries) >= s.maxSize {
 		s.evictOldest()
 	}
@@ -56,6 +66,10 @@ func (s *MemoryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEnt
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
 
 	for _, entry := range entries {
 		if entry == nil {
@@ -88,6 +102,10 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
+
 	var results []*model.LogEntry
 	for _, entry := range s.entries {
 		if filter == nil || filter.Matches(entry) {
@@ -117,6 +135,10 @@ func (s *MemoryLogStore) Count(ctx context.Context, filter *model.LogFilter) (in
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
+
 	var count int64
 	for _, entry := range s.entries {
 		if filter == nil || filter.Matches(entry) {
@@ -131,6 +153,10 @@ func (s *MemoryLogStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
+
 	if _, ok := s.entries[id]; !ok {
 		return fmt.Errorf("log entry not found: %s", id)
 	}
@@ -142,6 +168,10 @@ func (s *MemoryLogStore) Delete(ctx context.Context, id string) error {
 func (s *MemoryLogStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
 
 	var count int64
 	for id, entry := range s.entries {
@@ -160,6 +190,10 @@ func (s *MemoryLogStore) ListSources(ctx context.Context) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
+
 	sourceSet := make(map[string]bool)
 	for _, entry := range s.entries {
 		sourceSet[entry.Source] = true
@@ -177,6 +211,10 @@ func (s *MemoryLogStore) ListSources(ctx context.Context) ([]string, error) {
 func (s *MemoryLogStore) ListServices(ctx context.Context) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
 
 	serviceSet := make(map[string]bool)
 	for _, entry := range s.entries {
@@ -197,6 +235,10 @@ func (s *MemoryLogStore) ListServices(ctx context.Context) ([]string, error) {
 func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*LogStatistics, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
 
 	stats := &LogStatistics{
 		ByLevel:   make(map[model.LogLevel]int64),
@@ -235,6 +277,10 @@ func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*L
 func (s *MemoryLogStore) HourlyBreakdown(ctx context.Context, from, to time.Time) ([]HourlyCount, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	if s.processingDelay > 0 {
+		time.Sleep(s.processingDelay)
+	}
 
 	type key struct {
 		hour  string
