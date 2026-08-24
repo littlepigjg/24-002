@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"time"
 
+	"logalert/internal/config"
+	"logalert/internal/store"
 	"logalert/pkg/logger"
 )
 
@@ -14,50 +16,52 @@ import (
 type HealthHandler struct {
 	logger    logger.Logger
 	startTime time.Time
+	urlStore  *store.URLStore
+	cfg       *config.Config
 }
 
 // NewHealthHandler creates a new HealthHandler.
-func NewHealthHandler(log logger.Logger) *HealthHandler {
+func NewHealthHandler(log logger.Logger, us *store.URLStore, cfg *config.Config) *HealthHandler {
 	return &HealthHandler{
 		logger:    log.WithField("handler", "health"),
 		startTime: time.Now(),
+		urlStore:  us,
+		cfg:       cfg,
 	}
 }
 
 // HealthResponse represents the health check response.
 type HealthResponse struct {
-	// Status is the health status ("ok" or "error").
-	Status string `json:"status"`
-	// Uptime is the time since the service started.
-	Uptime string `json:"uptime"`
-	// Version is the application version.
-	Version string `json:"version"`
-	// GoVersion is the Go runtime version.
-	GoVersion string `json:"go_version"`
-	// Memory contains memory statistics.
-	Memory MemoryStats `json:"memory"`
-	// Goroutines is the current number of goroutines.
-	Goroutines int `json:"goroutines"`
-	// Timestamp is when the health check was performed.
-	Timestamp time.Time `json:"timestamp"`
+	Status    string      `json:"status"`
+	Uptime    string      `json:"uptime"`
+	Version   string      `json:"version"`
+	GoVersion string      `json:"go_version"`
+	Memory    MemoryStats `json:"memory"`
+	Goroutines int        `json:"goroutines"`
+	Timestamp time.Time   `json:"timestamp"`
 }
 
 // MemoryStats contains Go runtime memory statistics.
 type MemoryStats struct {
-	// Alloc is the current bytes allocated.
-	Alloc uint64 `json:"alloc"`
-	// HeapAlloc is the current heap bytes allocated.
+	Alloc     uint64 `json:"alloc"`
 	HeapAlloc uint64 `json:"heap_alloc"`
-	// HeapSys is the total bytes of heap memory obtained from the OS.
-	HeapSys uint64 `json:"heap_sys"`
-	// NumGC is the number of completed GC cycles.
-	NumGC uint32 `json:"num_gc"`
+	HeapSys   uint64 `json:"heap_sys"`
+	NumGC     uint32 `json:"num_gc"`
 }
 
 // HandleHealth handles GET /health
 func (h *HealthHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
+
+	if h.urlStore != nil {
+		ctx, cancel := getHealthCheckContext(r.Context(), h.cfg)
+		defer cancel()
+
+		if err := h.urlStore.Load(ctx); err != nil {
+			h.logger.Error("health check load failed", "error", err)
+		}
+	}
 
 	resp := HealthResponse{
 		Status:    "ok",
@@ -81,8 +85,6 @@ func (h *HealthHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 
 // HandleReady handles GET /ready
 func (h *HealthHandler) HandleReady(w http.ResponseWriter, r *http.Request) {
-	// In a real application, we would check database connectivity,
-	// external services, etc. For now, just return ok.
 	ready := map[string]interface{}{
 		"status":    "ready",
 		"timestamp": time.Now(),
@@ -119,7 +121,6 @@ func (h *HealthHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/readiness", h.HandleReady)
 	mux.HandleFunc("/info", h.HandleInfo)
 
-	// Also handle /health/ with trailing path
 	mux.HandleFunc("/health/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch path {

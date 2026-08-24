@@ -45,6 +45,16 @@ func main() {
 	logStore := store.NewMemoryLogStore(cfg.Storage.MaxLogEntries, log)
 	ruleStore := store.NewMemoryRuleStore(log)
 	alertStore := store.NewMemoryAlertStore(cfg.Storage.MaxAlertRecords, log)
+	urlStore, err := store.NewURLStore(cfg)
+	if err != nil {
+		log.Error("failed to create URL store", "error", err)
+		os.Exit(1)
+	}
+	accessLogStore, err := store.NewAccessLogStore(cfg)
+	if err != nil {
+		log.Error("failed to create access log store", "error", err)
+		os.Exit(1)
+	}
 
 	// Initialize services
 	logSvc := service.NewLogService(logStore, cfg, log)
@@ -61,7 +71,8 @@ func main() {
 	ruleHandler := handler.NewRuleHandler(ruleSvc, log)
 	alertHandler := handler.NewAlertHandler(alertSvc, log)
 	statsHandler := handler.NewStatsHandler(statsSvc, log)
-	healthHandler := handler.NewHealthHandler(log)
+	healthHandler := handler.NewHealthHandler(log, urlStore, cfg)
+	configHandler := handler.NewConfigHandler(cfg, log, urlStore)
 	schedulerHandler := handler.NewSchedulerHandler(scheduler, log)
 
 	// Create mux and register routes
@@ -73,6 +84,7 @@ func main() {
 	alertHandler.RegisterRoutes(mux)
 	statsHandler.RegisterRoutes(mux)
 	healthHandler.RegisterRoutes(mux)
+	configHandler.RegisterRoutes(mux)
 	schedulerHandler.RegisterRoutes(mux)
 
 	// Serve static frontend files
@@ -162,6 +174,8 @@ func main() {
 	logStore.Close()
 	ruleStore.Close()
 	alertStore.Close()
+	urlStore.Close()
+	accessLogStore.Close()
 
 	// Wait for server to finish
 	wg.Wait()

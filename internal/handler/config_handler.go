@@ -1,4 +1,3 @@
-// Package handler implements HTTP request handlers for the API.
 package handler
 
 import (
@@ -6,6 +5,7 @@ import (
 	"time"
 
 	"logalert/internal/config"
+	"logalert/internal/store"
 	"logalert/pkg/jsonutil"
 	"logalert/pkg/logger"
 	"logalert/pkg/response"
@@ -13,15 +13,17 @@ import (
 
 // ConfigHandler handles HTTP requests for configuration operations.
 type ConfigHandler struct {
-	config *config.Config
-	logger logger.Logger
+	config   *config.Config
+	logger   logger.Logger
+	urlStore *store.URLStore
 }
 
 // NewConfigHandler creates a new ConfigHandler.
-func NewConfigHandler(cfg *config.Config, log logger.Logger) *ConfigHandler {
+func NewConfigHandler(cfg *config.Config, log logger.Logger, us *store.URLStore) *ConfigHandler {
 	return &ConfigHandler{
-		config: cfg,
-		logger: log.WithField("handler", "config"),
+		config:   cfg,
+		logger:   log.WithField("handler", "config"),
+		urlStore: us,
 	}
 }
 
@@ -30,6 +32,15 @@ func (h *ConfigHandler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	if h.config == nil {
 		response.Error(500, "configuration not available").Write(w)
 		return
+	}
+
+	if h.urlStore != nil {
+		ctx, cancel := getConfigLoadContext(r.Context(), h.config)
+		defer cancel()
+
+		if err := h.urlStore.Load(ctx); err != nil {
+			h.logger.Error("config load failed", "error", err)
+		}
 	}
 
 	configJSON, err := h.config.ToJSON()
@@ -60,7 +71,6 @@ func (h *ConfigHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply updates
 	if server, ok := updates["server"].(map[string]interface{}); ok {
 		if host, ok := server["host"].(string); ok {
 			h.config.Server.Host = host
@@ -76,7 +86,6 @@ func (h *ConfigHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Validate
 	if err := h.config.Validate(); err != nil {
 		response.Error(400, err.Error()).Write(w)
 		return
@@ -88,7 +97,6 @@ func (h *ConfigHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 // ReloadConfig handles POST /api/config/reload
 func (h *ConfigHandler) ReloadConfig(w http.ResponseWriter, r *http.Request) {
-	// In a real application, this would reload from file
 	h.logger.Info("configuration reload requested")
 	response.SuccessMsg("configuration reloaded", time.Now()).Write(w)
 }

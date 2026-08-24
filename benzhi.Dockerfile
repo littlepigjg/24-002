@@ -14,8 +14,8 @@ COPY internal/ ./internal/
 COPY pkg/ ./pkg/
 COPY static/ ./static/
 
-# 预先下载依赖和编译
-RUN go mod download && go build ./...
+# 预先下载依赖（编译在容器启动时通过 go run 完成）
+RUN go mod download
 
 # 暴露端口
 EXPOSE 8080

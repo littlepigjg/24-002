@@ -50,6 +50,34 @@ type StorageConfig struct {
 	PersistToFile bool `json:"persist_to_file"`
 	// DataDir is the directory for data persistence.
 	DataDir string `json:"data_dir"`
+	// URLFilePath is the path for URL storage file.
+	URLFile string `json:"url_file"`
+	// LogFilePath is the path for log storage file.
+	LogFile string `json:"log_file"`
+	// SyncInterval is the interval for syncing to disk.
+	SyncIntervalDur time.Duration `json:"sync_interval"`
+	// FlushOnWrite enables immediate flush on write.
+	FlushOnWriteEnabled bool `json:"flush_on_write"`
+}
+
+// URLFilePath sets the URL file path.
+func (s *StorageConfig) URLFilePath(path string) {
+	s.URLFile = path
+}
+
+// LogFilePath sets the log file path.
+func (s *StorageConfig) LogFilePath(path string) {
+	s.LogFile = path
+}
+
+// SyncInterval sets the sync interval.
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.SyncIntervalDur = d
+}
+
+// FlushOnWrite enables or disables flush on write.
+func (s *StorageConfig) FlushOnWrite(enable bool) {
+	s.FlushOnWriteEnabled = enable
 }
 
 // AlertConfig holds alert rule configuration.
@@ -101,6 +129,10 @@ func DefaultConfig() *Config {
 			MaxAlertRecords:  10000,
 			PersistToFile:     false,
 			DataDir:          "./data",
+			URLFile:          "./data/urls.json",
+			LogFile:          "./data/access_log.json",
+			SyncIntervalDur:   5 * time.Second,
+			FlushOnWriteEnabled: true,
 		},
 		Alert: AlertConfig{
 			DefaultScanInterval: 1 * time.Minute,
