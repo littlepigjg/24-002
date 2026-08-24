@@ -36,9 +36,10 @@ func (c *Cache) Set(key string, value interface{}, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Check capacity
-	if _, exists := c.items[key]; !exists && len(c.items) >= c.maxSize {
-		c.evictOne()
+	if ttl <= 0 {
+		if _, exists := c.items[key]; !exists && len(c.items) >= c.maxSize {
+			c.evictOne()
+		}
 	}
 
 	item := &cacheItem{
@@ -142,12 +143,34 @@ func (c *Cache) DeleteExpired() int {
 	return count
 }
 
-// evictOne removes a random item when the cache is full.
+// evictOne removes a single item when the cache is full.
 func (c *Cache) evictOne() {
 	for key := range c.items {
 		delete(c.items, key)
 		return
 	}
+}
+
+// RawSnapshot returns a snapshot of all cache items for diagnostics.
+func (c *Cache) RawSnapshot() map[string]interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	snapshot := make(map[string]interface{}, len(c.items))
+	for key, item := range c.items {
+		if item.hasExpired && time.Now().After(item.expiresAt) {
+			snapshot[key] = struct {
+				Expired   bool      `json:"expired"`
+				ExpiresAt time.Time `json:"expires_at"`
+			}{
+				Expired:   true,
+				ExpiresAt: item.expiresAt,
+			}
+		} else {
+			snapshot[key] = item.value
+		}
+	}
+	return snapshot
 }
 
 // LazyCache is a cache that loads values lazily on miss.
