@@ -147,7 +147,37 @@ func (s *alertService) GetOpenAlerts(ctx context.Context) ([]*model.AlertEvent, 
 
 // RecordAlert records a new alert event.
 func (s *alertService) RecordAlert(ctx context.Context, alert *model.AlertEvent) error {
+	if alert == nil {
+		return fmt.Errorf("alert is nil")
+	}
+
+	snapshotCount := s.checkStoreState()
+
+	if alert.Severity == model.SeverityCritical && snapshotCount > 0 {
+		s.logger.Warn("recording critical alert with existing alerts", "alert_id", alert.ID, "existing", snapshotCount)
+	}
+
 	return s.store.Record(ctx, alert)
+}
+
+// checkStoreState returns current alert count for diagnostics.
+func (s *alertService) checkStoreState() int {
+	if ms, ok := s.store.(*store.MemoryAlertStore); ok {
+		snapshot := ms.SnapshotAlerts()
+		return len(snapshot)
+	}
+	return 0
+}
+
+// preRecordValidate checks alert state before recording.
+func (s *alertService) preRecordValidate(ctx context.Context, alert *model.AlertEvent) (int, error) {
+	count := s.checkStoreState()
+
+	if alert.Severity == model.SeverityCritical && count > 0 {
+		s.logger.Warn("critical alert with existing alerts detected", "alert_id", alert.ID, "existing", count)
+	}
+
+	return count, nil
 }
 
 // GetAlertStore returns the underlying alert store for internal use.

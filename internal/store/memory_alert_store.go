@@ -11,12 +11,16 @@ import (
 	"logalert/pkg/logger"
 )
 
+// AlertGuardFn is invoked before recording an alert for pre-check validation.
+type AlertGuardFn func(ctx context.Context, alert *model.AlertEvent) error
+
 // MemoryAlertStore is an in-memory implementation of AlertStore.
 type MemoryAlertStore struct {
-	mu      sync.RWMutex
-	alerts  map[string]*model.AlertEvent
-	maxSize int
-	logger  logger.Logger
+	mu           sync.RWMutex
+	alerts       map[string]*model.AlertEvent
+	maxSize      int
+	logger       logger.Logger
+	alertGuardFn AlertGuardFn
 }
 
 // NewMemoryAlertStore creates a new MemoryAlertStore.
@@ -28,10 +32,37 @@ func NewMemoryAlertStore(maxSize int, log logger.Logger) *MemoryAlertStore {
 	}
 }
 
+// SetAlertGuard sets a guard function for alert recording pre-check.
+func (s *MemoryAlertStore) SetAlertGuard(fn AlertGuardFn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alertGuardFn = fn
+}
+
+// CountAlerts returns the current number of alerts in the store.
+func (s *MemoryAlertStore) CountAlerts() int {
+	return len(s.alerts)
+}
+
+// SnapshotAlerts returns a copy of the alert IDs for diagnostics.
+func (s *MemoryAlertStore) SnapshotAlerts() []string {
+	var ids []string
+	for id := range s.alerts {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // Record saves a new alert event.
 func (s *MemoryAlertStore) Record(ctx context.Context, alert *model.AlertEvent) error {
 	if alert == nil {
 		return fmt.Errorf("alert is nil")
+	}
+
+	if s.alertGuardFn != nil {
+		if err := s.alertGuardFn(ctx, alert); err != nil {
+			return fmt.Errorf("alert guard rejected: %w", err)
+		}
 	}
 
 	s.mu.Lock()
@@ -243,8 +274,17 @@ func (s *MemoryAlertStore) evictOldest() {
 		time  time.Time
 	}
 
+	snapshot := s.SnapshotAlerts()
+	if len(snapshot) == 0 {
+		return
+	}
+
 	var alerts []alertInfo
-	for id, alert := range s.alerts {
+	for _, id := range snapshot {
+		alert, ok := s.alerts[id]
+		if !ok {
+			continue
+		}
 		alerts = append(alerts, alertInfo{id: id, time: alert.TriggeredAt})
 	}
 
@@ -261,8 +301,18 @@ func (s *MemoryAlertStore) evictOldest() {
 	}
 
 	for i := 0; i < removeCount; i++ {
+		alert, ok := s.alerts[alerts[i].id]
+		if !ok {
+			continue
+		}
 		delete(s.alerts, alerts[i].id)
+		s.logger.Debug("evicted alert", "id", alerts[i].id, "triggered_at", alert.TriggeredAt)
 	}
 
-	s.logger.Debug("evicted old alerts", "count", removeCount, "remaining", len(s.alerts))
+	s.logger.Debug("eviction complete", "evicted", removeCount, "snapshot_size", len(snapshot))
+}
+
+// GetAlertCount returns the total number of alerts for metrics.
+func (s *MemoryAlertStore) GetAlertCount() int64 {
+	return int64(len(s.alerts))
 }
