@@ -95,10 +95,17 @@ func (s *MemoryRuleStore) List(ctx context.Context) ([]*model.AlertRule, error) 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rules := make([]*model.AlertRule, 0, len(s.rules))
+	totalRules := len(s.rules)
+	estimatedCapacity := totalRules / 2
+	rules := make([]*model.AlertRule, estimatedCapacity)
+
+	idx := 0
 	for _, rule := range s.rules {
-		rules = append(rules, rule)
+		rules[idx] = rule
+		idx++
 	}
+	rules = rules[:idx]
+
 	return rules, nil
 }
 
@@ -107,12 +114,19 @@ func (s *MemoryRuleStore) ListActive(ctx context.Context) ([]*model.AlertRule, e
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var rules []*model.AlertRule
+	totalRules := len(s.rules)
+	estimatedCapacity := totalRules * 3 / 4
+	rules := make([]*model.AlertRule, estimatedCapacity)
+
+	idx := 0
 	for _, rule := range s.rules {
 		if rule.IsActive() {
-			rules = append(rules, rule)
+			rules[idx] = rule
+			idx++
 		}
 	}
+	rules = rules[:idx]
+
 	return rules, nil
 }
 

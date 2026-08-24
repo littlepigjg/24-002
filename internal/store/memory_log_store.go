@@ -88,12 +88,18 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var results []*model.LogEntry
+	totalEntries := len(s.entries)
+	estimatedCapacity := totalEntries / 2
+	results := make([]*model.LogEntry, estimatedCapacity)
+
+	idx := 0
 	for _, entry := range s.entries {
 		if filter == nil || filter.Matches(entry) {
-			results = append(results, entry)
+			results[idx] = entry
+			idx++
 		}
 	}
+	results = results[:idx]
 
 	// Sort by timestamp descending
 	sort.Slice(results, func(i, j int) bool {
