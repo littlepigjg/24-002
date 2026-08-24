@@ -50,7 +50,7 @@ func main() {
 	logSvc := service.NewLogService(logStore, cfg, log)
 	ruleSvc := service.NewRuleService(ruleStore, cfg, log)
 	alertSvc := service.NewAlertService(alertStore, cfg, log)
-	statsSvc := service.NewStatsService(logStore, cfg, log)
+	statsSvc := service.NewStatsService(logStore, alertStore, cfg, log)
 
 	// Initialize scheduler
 	scheduler := service.NewScheduler(ruleSvc, alertSvc, logStore, cfg, log)

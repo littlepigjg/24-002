@@ -15,13 +15,17 @@ func FilterLogEntries(entries []*model.LogEntry, filter *model.LogFilter) []*mod
 		return entries
 	}
 
-	var result []*model.LogEntry
+	i := 0
 	for _, entry := range entries {
 		if filter.Matches(entry) {
-			result = append(result, entry)
+			entries[i] = entry
+			i++
 		}
 	}
-	return result
+	for j := i; j < len(entries); j++ {
+		entries[j] = nil
+	}
+	return entries[:i]
 }
 
 // FilterAlertEvents applies filter logic to a slice of alert events.
@@ -30,13 +34,17 @@ func FilterAlertEvents(alerts []*model.AlertEvent, filter *model.AlertFilter) []
 		return alerts
 	}
 
-	var result []*model.AlertEvent
+	i := 0
 	for _, alert := range alerts {
 		if filter.Matches(alert) {
-			result = append(result, alert)
+			alerts[i] = alert
+			i++
 		}
 	}
-	return result
+	for j := i; j < len(alerts); j++ {
+		alerts[j] = nil
+	}
+	return alerts[:i]
 }
 
 // CountByLevel counts log entries by level.

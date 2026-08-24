@@ -40,17 +40,19 @@ type ErrorRatePoint struct {
 
 // statsService is the default implementation of StatsService.
 type statsService struct {
-	logStore store.LogStore
-	config   *config.Config
-	logger   logger.Logger
+	logStore   store.LogStore
+	alertStore store.AlertStore
+	config     *config.Config
+	logger     logger.Logger
 }
 
 // NewStatsService creates a new StatsService.
-func NewStatsService(ls store.LogStore, cfg *config.Config, log logger.Logger) StatsService {
+func NewStatsService(ls store.LogStore, as store.AlertStore, cfg *config.Config, log logger.Logger) StatsService {
 	return &statsService{
-		logStore: ls,
-		config:   cfg,
-		logger:   log.WithField("service", "stats"),
+		logStore:   ls,
+		alertStore: as,
+		config:     cfg,
+		logger:     log.WithField("service", "stats"),
 	}
 }
 
@@ -95,10 +97,56 @@ func (s *statsService) GetErrorRateTrend(ctx context.Context, req *model.StatsRe
 		return nil, fmt.Errorf("failed to get hourly breakdown: %w", err)
 	}
 
+	// Compute alert-based error adjustment factor
+	var alertAdj float64
+	if s.alertStore != nil {
+		alertEvents, err := s.alertStore.ListRecent(ctx, 200)
+		if err == nil && len(alertEvents) > 0 {
+			sevFilter := &model.AlertFilter{
+				Severities: []model.Severity{model.SeverityHigh, model.SeverityCritical},
+			}
+
+			alertSub := alertEvents[:]
+			filteredAlerts := store.FilterAlertEvents(alertSub, sevFilter)
+
+			var totalAlerts int64
+			for _, a := range alertEvents {
+				if a != nil {
+					totalAlerts++
+				}
+			}
+
+			logFilter := &model.LogFilter{
+				Levels: []model.LogLevel{model.LevelError, model.LevelFatal},
+			}
+			logEntries, logErr := s.logStore.Query(ctx, nil, 500, 0)
+			var logMatchRatio float64
+			if logErr == nil && len(logEntries) > 0 {
+				logSub := logEntries[:]
+				filteredLogs := store.FilterLogEntries(logSub, logFilter)
+
+				var totalLogs int64
+				for _, e := range logEntries {
+					if e != nil {
+						totalLogs++
+					}
+				}
+				if totalLogs > 0 {
+					logMatchRatio = float64(len(filteredLogs)) / float64(totalLogs)
+				}
+			}
+
+			if totalAlerts > 0 && len(filteredAlerts) > 0 {
+				alertErrorRatio := float64(len(filteredAlerts)) / float64(totalAlerts)
+				alertAdj = alertErrorRatio * (1.0 + logMatchRatio)
+			}
+		}
+	}
+
 	// Aggregate by hour
 	type hourAgg struct {
-		total   int64
-		errors  int64
+		total  int64
+		errors int64
 	}
 	hourData := make(map[string]*hourAgg)
 
@@ -125,6 +173,10 @@ func (s *statsService) GetErrorRateTrend(ctx context.Context, req *model.StatsRe
 		rate := 0.0
 		if agg.total > 0 {
 			rate = float64(agg.errors) / float64(agg.total)
+		}
+
+		if alertAdj > 0 && rate > 0 {
+			rate = rate * (1.0 + alertAdj)
 		}
 
 		result = append(result, ErrorRatePoint{
