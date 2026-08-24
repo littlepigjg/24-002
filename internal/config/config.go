@@ -50,6 +50,43 @@ type StorageConfig struct {
 	PersistToFile bool `json:"persist_to_file"`
 	// DataDir is the directory for data persistence.
 	DataDir string `json:"data_dir"`
+
+	urlFilePath    string
+	logFilePath    string
+	syncInterval   time.Duration
+	flushOnWrite   bool
+}
+
+func (s *StorageConfig) URLFilePath(path string) {
+	s.urlFilePath = path
+}
+
+func (s *StorageConfig) LogFilePath(path string) {
+	s.logFilePath = path
+}
+
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+func (s *StorageConfig) FlushOnWrite(b bool) {
+	s.flushOnWrite = b
+}
+
+func (s *StorageConfig) GetURLFilePath() string {
+	return s.urlFilePath
+}
+
+func (s *StorageConfig) GetLogFilePath() string {
+	return s.logFilePath
+}
+
+func (s *StorageConfig) GetSyncInterval() time.Duration {
+	return s.syncInterval
+}
+
+func (s *StorageConfig) GetFlushOnWrite() bool {
+	return s.flushOnWrite
 }
 
 // AlertConfig holds alert rule configuration.
@@ -82,6 +119,11 @@ type SchedulerConfig struct {
 	MaxConcurrentScans int `json:"max_concurrent_scans"`
 	// EnableAutoScan enables automatic rule scanning.
 	EnableAutoScan bool `json:"enable_auto_scan"`
+}
+
+// Default returns a Config with sensible defaults.
+func Default() *Config {
+	return DefaultConfig()
 }
 
 // DefaultConfig returns a Config with sensible defaults.

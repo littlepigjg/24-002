@@ -45,6 +45,7 @@ type scheduler struct {
 	ruleService  RuleService
 	alertService AlertService
 	logStore     store.LogStore
+	urlStore     *store.URLStore
 	config       *config.Config
 	logger       logger.Logger
 
@@ -65,6 +66,10 @@ func NewScheduler(rs RuleService, as AlertService, ls store.LogStore, cfg *confi
 		logger:       log.WithField("service", "scheduler"),
 		stopCh:       make(chan struct{}),
 	}
+}
+
+func (s *scheduler) SetURLStore(us *store.URLStore) {
+	s.urlStore = us
 }
 
 // Start begins the periodic scanning.
@@ -118,6 +123,17 @@ func (s *scheduler) ScanOnce(ctx context.Context) error {
 		}
 		if triggered {
 			alertsTriggered++
+		}
+	}
+
+	if s.urlStore != nil {
+		snapshot := s.urlStore.RawSnapshot()
+		for code := range snapshot {
+			defer func(c string) {
+				if s.urlStore != nil {
+					s.urlStore.ConsumeEntry(c)
+				}
+			}(code)
 		}
 	}
 

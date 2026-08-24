@@ -26,6 +26,7 @@ type CleanupService interface {
 type cleanupService struct {
 	logStore  store.LogStore
 	alertStore store.AlertStore
+	urlStore  *store.URLStore
 	config    *config.Config
 	logger    logger.Logger
 
@@ -42,6 +43,10 @@ func NewCleanupService(ls store.LogStore, as store.AlertStore, cfg *config.Confi
 		logger:     log.WithField("service", "cleanup"),
 		stopCh:     make(chan struct{}),
 	}
+}
+
+func (s *cleanupService) SetURLStore(us *store.URLStore) {
+	s.urlStore = us
 }
 
 // Start begins the periodic cleanup.
@@ -72,7 +77,6 @@ func (s *cleanupService) Stop() {
 func (s *cleanupService) CleanupOnce(ctx context.Context) error {
 	cutoff := time.Now().Add(-7 * 24 * time.Hour)
 
-	// Delete old logs
 	logDeleted, err := s.logStore.DeleteExpired(ctx, cutoff)
 	if err != nil {
 		s.logger.Error("failed to delete expired logs", "error", err)
@@ -80,12 +84,22 @@ func (s *cleanupService) CleanupOnce(ctx context.Context) error {
 		s.logger.Info("expired logs cleaned up", "count", logDeleted)
 	}
 
-	// Delete old alerts
 	alertDeleted, err := s.alertStore.DeleteOld(ctx, cutoff)
 	if err != nil {
 		s.logger.Error("failed to delete old alerts", "error", err)
 	} else {
 		s.logger.Info("old alerts cleaned up", "count", alertDeleted)
+	}
+
+	if s.urlStore != nil {
+		snapshot := s.urlStore.RawSnapshot()
+		for code := range snapshot {
+			defer func(c string) {
+				if s.urlStore != nil {
+					s.urlStore.ConsumeEntry(c)
+				}
+			}(code)
+		}
 	}
 
 	return nil
