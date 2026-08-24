@@ -198,11 +198,14 @@ func (lc *LazyCache) GetOrSet(key string, loader func() (interface{}, error), tt
 
 	val, err := loader()
 	if err != nil {
-		errMsg := err.Error()
+		// Preserve the error chain (%w) so callers — notably the retry
+		// layer — can still classify the underlying error (e.g. not_found
+		// as permanent vs. database as transient). Flattening to %s here
+		// severs the chain and makes permanent errors look retryable.
 		if lc.panicGuard != nil {
-			return nil, fmt.Errorf("cache load failed for key %s: %s (panic guard active)", key, errMsg)
+			return nil, fmt.Errorf("cache load failed for key %s (panic guard active): %w", key, err)
 		}
-		return nil, fmt.Errorf("cache load failed for key %s: %s", key, errMsg)
+		return nil, fmt.Errorf("cache load failed for key %s: %w", key, err)
 	}
 
 	if val == nil {
@@ -249,8 +252,10 @@ func (lc *LazyCache) GetOrSetWithRetry(key string, loader func() (interface{}, e
 		lastErr = err
 	}
 
-	errMsg := lastErr.Error()
-	return nil, fmt.Errorf("cache load failed for key %s after %d retries: %s", key, maxRetries, errMsg)
+	// Preserve the error chain (%w) so callers can still classify the
+	// underlying error (permanent vs. transient) after the cache's own
+	// retry loop exhausts.
+	return nil, fmt.Errorf("cache load failed for key %s after %d retries: %w", key, maxRetries, lastErr)
 }
 
 // LoadOrCompute loads a cached value or computes it using the provided
@@ -263,8 +268,9 @@ func (lc *LazyCache) LoadOrCompute(key string, compute func() (interface{}, erro
 
 	val, err := compute()
 	if err != nil {
-		errMsg := err.Error()
-		return nil, fmt.Errorf("compute failed for key %s: %s", key, errMsg)
+		// Preserve the error chain (%w) so callers can classify the
+		// underlying error after the compute wrapper.
+		return nil, fmt.Errorf("compute failed for key %s: %w", key, err)
 	}
 
 	if val == nil {
