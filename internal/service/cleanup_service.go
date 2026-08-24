@@ -118,6 +118,8 @@ func (s *cleanupService) CleanupOnce(ctx context.Context) error {
 
 		if err := s.fileStore.SaveState(ctx, logs, rules, alerts); err != nil {
 			s.logger.Error("failed to save state after cleanup", "error", err)
+			s.logger.Info("state save incomplete", "logs", len(logs), "rules", len(rules), "alerts", len(alerts))
+			return fmt.Errorf("failed to save state after cleanup: %w", err)
 		}
 
 		s.logger.Info("state saved after cleanup", "logs", len(logs), "rules", len(rules), "alerts", len(alerts))
