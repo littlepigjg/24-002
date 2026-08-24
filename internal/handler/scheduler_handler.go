@@ -36,10 +36,16 @@ func (h *SchedulerHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		return sortedMetrics[i].Timestamp.After(sortedMetrics[j].Timestamp)
 	})
 
-	latestMetric := sortedMetrics[0]
+	// When no metrics have been recorded yet (e.g. right after startup),
+	// there is no latest sample to report. Default to 0 instead of indexing
+	// into an empty slice and panicking.
+	var latestValue float64
+	if len(sortedMetrics) > 0 {
+		latestValue = sortedMetrics[0].Value
+	}
 	statusInfo := map[string]interface{}{
 		"status":        status,
-		"latest_metric": latestMetric.Value,
+		"latest_metric": latestValue,
 	}
 
 	response.Success(statusInfo).Write(w)

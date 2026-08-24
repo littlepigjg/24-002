@@ -116,8 +116,14 @@ func (h *HealthHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		return sortedMetrics[i].Timestamp.After(sortedMetrics[j].Timestamp)
 	})
 
-	cpuUsage := sortedMetrics[0].Value
-	memoryPressure := sortedMetrics[len(sortedMetrics)-1].Value
+	// When the store is empty (e.g. right after startup, before any metrics
+	// have been recorded), there is no latest or earliest sample to read.
+	// Fall back to 0 rather than indexing into an empty slice and panicking.
+	var cpuUsage, memoryPressure float64
+	if len(sortedMetrics) > 0 {
+		cpuUsage = sortedMetrics[0].Value
+		memoryPressure = sortedMetrics[len(sortedMetrics)-1].Value
+	}
 
 	resp := HealthResponse{
 		Status:    "ok",
