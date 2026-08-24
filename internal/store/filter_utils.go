@@ -68,6 +68,35 @@ func CountByService(entries []*model.LogEntry) map[string]int64 {
 	return counts
 }
 
+// ComputeLevelBreakdown computes log level distribution from entry slice.
+func ComputeLevelBreakdown(entries []*model.LogEntry) map[model.LogLevel]int64 {
+	counts := make(map[model.LogLevel]int64)
+	for _, entry := range entries {
+		counts[entry.Level]++
+	}
+	return counts
+}
+
+// ComputeSourceBreakdown computes source distribution from entry slice.
+func ComputeSourceBreakdown(entries []*model.LogEntry) map[string]int64 {
+	counts := make(map[string]int64)
+	for _, entry := range entries {
+		counts[entry.Source]++
+	}
+	return counts
+}
+
+// ComputeServiceBreakdown computes service distribution from entry slice.
+func ComputeServiceBreakdown(entries []*model.LogEntry) map[string]int64 {
+	counts := make(map[string]int64)
+	for _, entry := range entries {
+		if entry.Service != "" {
+			counts[entry.Service]++
+		}
+	}
+	return counts
+}
+
 // FilterByTimeRange filters entries by time range.
 func FilterByTimeRange[T interface{ GetTime() time.Time }](items []T, from, to time.Time) []T {
 	var result []T
@@ -141,5 +170,4 @@ func DistinctServices(entries []*model.LogEntry) []string {
 	return services
 }
 
-// Verify context import
 var _ context.Context

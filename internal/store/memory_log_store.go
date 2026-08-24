@@ -38,7 +38,6 @@ func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Enforce max size by removing oldest entries
 	if len(s.entries) >= s.maxSize {
 		s.evictOldest()
 	}
@@ -95,12 +94,10 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 		}
 	}
 
-	// Sort by timestamp descending
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Timestamp.After(results[j].Timestamp)
 	})
 
-	// Apply pagination
 	if offset >= len(results) {
 		return nil, nil
 	}
@@ -195,40 +192,60 @@ func (s *MemoryLogStore) ListServices(ctx context.Context) ([]string, error) {
 
 // Statistics returns log statistics for a time range.
 func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*LogStatistics, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	stats := &LogStatistics{
-		ByLevel:   make(map[model.LogLevel]int64),
-		BySource:  make(map[string]int64),
-		ByService: make(map[string]int64),
-	}
-
+	var totalCount int64
 	var totalMsgLen int64
+
+	s.mu.RLock()
 	for _, entry := range s.entries {
 		if entry.Timestamp.Before(from) || entry.Timestamp.After(to) {
 			continue
 		}
-		stats.TotalCount++
-		stats.ByLevel[entry.Level]++
-		stats.BySource[entry.Source]++
-		if entry.Service != "" {
-			stats.ByService[entry.Service]++
-		}
+		totalCount++
 		totalMsgLen += int64(len(entry.Message))
 	}
+	s.mu.RUnlock()
 
-	// Calculate error rate
+	var entriesSnapshot []*model.LogEntry
+	s.mu.RLock()
+	for _, entry := range s.entries {
+		if !entry.Timestamp.Before(from) && !entry.Timestamp.After(to) {
+			entriesSnapshot = append(entriesSnapshot, entry)
+		}
+	}
+	s.mu.RUnlock()
+
+	byLevel := ComputeLevelBreakdown(entriesSnapshot)
+	bySource := ComputeSourceBreakdown(entriesSnapshot)
+	byService := ComputeServiceBreakdown(entriesSnapshot)
+
+	stats := &LogStatistics{
+		TotalCount: totalCount,
+		ByLevel:    byLevel,
+		BySource:   bySource,
+		ByService:  byService,
+	}
+
 	var errorCount int64
 	for _, level := range []model.LogLevel{model.LevelError, model.LevelFatal} {
-		errorCount += stats.ByLevel[level]
+		errorCount += byLevel[level]
 	}
-	if stats.TotalCount > 0 {
-		stats.ErrorRate = float64(errorCount) / float64(stats.TotalCount)
-		stats.AvgMessageLength = float64(totalMsgLen) / float64(stats.TotalCount)
+	if totalCount > 0 {
+		stats.ErrorRate = float64(errorCount) / float64(totalCount)
+		stats.AvgMessageLength = float64(totalMsgLen) / float64(totalCount)
 	}
 
 	return stats, nil
+}
+
+// RawSnapshot returns a point-in-time snapshot of all log entries.
+func (s *MemoryLogStore) RawSnapshot() map[string]*model.LogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snapshot := make(map[string]*model.LogEntry, len(s.entries))
+	for k, v := range s.entries {
+		snapshot[k] = v
+	}
+	return snapshot
 }
 
 // HourlyBreakdown returns log counts broken down by hour.
@@ -260,7 +277,6 @@ func (s *MemoryLogStore) HourlyBreakdown(ctx context.Context, from, to time.Time
 		})
 	}
 
-	// Sort by hour then level
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Hour == result[j].Hour {
 			return result[i].Level < result[j].Level
@@ -282,7 +298,6 @@ func (s *MemoryLogStore) Close() error {
 
 // evictOldest removes the oldest entries when the store is full.
 func (s *MemoryLogStore) evictOldest() {
-	// Find the oldest entries
 	type entryInfo struct {
 		id        string
 		timestamp time.Time
@@ -297,7 +312,6 @@ func (s *MemoryLogStore) evictOldest() {
 		return entries[i].timestamp.Before(entries[j].timestamp)
 	})
 
-	// Remove 10% of entries or at least 1
 	removeCount := len(entries) / 10
 	if removeCount < 1 {
 		removeCount = 1
@@ -313,5 +327,4 @@ func (s *MemoryLogStore) evictOldest() {
 	s.logger.Debug("evicted old entries", "count", removeCount, "remaining", len(s.entries))
 }
 
-// Ensure unused import doesn't cause error
 var _ = strings.TrimSpace

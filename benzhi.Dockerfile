@@ -14,7 +14,8 @@ COPY internal/ ./internal/
 COPY pkg/ ./pkg/
 COPY static/ ./static/
 
-# 预先下载依赖和编译
+# 预先下载依赖和编译（禁用 CGO 以避免 QEMU 模拟环境下 gcc 段错误）
+ENV CGO_ENABLED=0
 RUN go mod download && go build ./...
 
 # 暴露端口
