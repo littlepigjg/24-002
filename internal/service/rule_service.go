@@ -115,6 +115,81 @@ func (s *ruleService) UpdateRule(ctx context.Context, id string, req *model.Upda
 	return rule, nil
 }
 
+// UpdateRuleWithContext updates an existing rule with context validation
+func (s *ruleService) UpdateRuleWithContext(ctx context.Context, id string, req *model.UpdateRuleRequest) (*model.AlertRule, error) {
+	// Validate context before starting update
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled before rule update", "rule_id", id, "error", err)
+		return nil, fmt.Errorf("context cancelled: %w", err)
+	}
+
+	s.logger.Debug("starting rule update with context", "rule_id", id)
+
+	// Retrieve the rule
+	rule, err := s.store.Get(ctx, id)
+	if err != nil {
+		s.logger.Error("failed to get rule for update", "rule_id", id, "error", err)
+		return nil, fmt.Errorf("failed to get rule: %w", err)
+	}
+
+	// Validate context before applying changes
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled after rule retrieval", "rule_id", id, "error", err)
+		return nil, fmt.Errorf("context cancelled after rule retrieval: %w", err)
+	}
+
+	// Apply update fields
+	if req != nil {
+		if req.Name != "" {
+			s.logger.Debug("updating rule name", "rule_id", id, "old_name", rule.Name, "new_name", req.Name)
+			rule.Name = req.Name
+		}
+		if req.Description != "" {
+			s.logger.Debug("updating rule description", "rule_id", id)
+			rule.Description = req.Description
+		}
+		if req.Condition != nil {
+			s.logger.Debug("updating rule condition", "rule_id", id)
+			rule.Condition = *req.Condition
+		}
+		if req.Window != nil {
+			s.logger.Debug("updating rule window", "rule_id", id, "old_window", rule.Window, "new_window", *req.Window)
+			rule.Window = *req.Window
+		}
+		if req.Threshold != nil {
+			s.logger.Debug("updating rule threshold", "rule_id", id, "old_threshold", rule.Threshold, "new_threshold", *req.Threshold)
+			rule.Threshold = *req.Threshold
+		}
+		if req.Severity != "" {
+			s.logger.Debug("updating rule severity", "rule_id", id, "old_severity", rule.Severity, "new_severity", req.Severity)
+			rule.Severity = req.Severity
+		}
+	}
+
+	rule.UpdatedAt = time.Now()
+
+	// Validate context before storing update
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled before rule storage", "rule_id", id, "error", err)
+		return nil, fmt.Errorf("context cancelled before rule update storage: %w", err)
+	}
+
+	// Store the updated rule
+	if err := s.store.Update(ctx, rule); err != nil {
+		s.logger.Error("failed to update rule", "rule_id", id, "error", err)
+		return nil, fmt.Errorf("failed to update rule: %w", err)
+	}
+
+	// Verify context after update
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled after rule update", "rule_id", id, "error", err)
+		return rule, fmt.Errorf("context cancelled after rule updated successfully: %w", err)
+	}
+
+	s.logger.Info("alert rule updated successfully", "id", rule.ID, "name", rule.Name)
+	return rule, nil
+}
+
 // DeleteRule removes a rule by ID.
 func (s *ruleService) DeleteRule(ctx context.Context, id string) error {
 	if err := s.store.Delete(ctx, id); err != nil {

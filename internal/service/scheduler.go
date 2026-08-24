@@ -239,3 +239,150 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 	s.logger.Warn("alert triggered", "rule_id", rule.ID, "rule_name", rule.Name, "count", count)
 	return true, nil
 }
+
+// evaluateRuleWithContext evaluates a single rule with context validation
+func (s *scheduler) evaluateRuleWithContext(ctx context.Context, rule *model.AlertRule, now time.Time) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled before rule evaluation", "rule_id", rule.ID, "error", err)
+		return false, fmt.Errorf("context cancelled: %w", err)
+	}
+
+	if !rule.CanFire(now) {
+		return false, nil
+	}
+
+	s.logger.Debug("starting rule evaluation with context", "rule_id", rule.ID, "rule_name", rule.Name)
+
+	// Build filter based on rule condition
+	filter := &model.LogFilter{
+		Levels:   nil,
+		Sources:  nil,
+		Service:  rule.Condition.Service,
+		Keywords: rule.Condition.Keywords,
+	}
+
+	// Set time range
+	from := now.Add(-rule.Window)
+	filter.StartTime = &from
+	filter.EndTime = &now
+
+	// Apply source filter
+	if rule.Condition.Source != "" {
+		filter.Sources = []string{rule.Condition.Source}
+	}
+
+	// Apply level filter
+	if rule.Condition.Level != "" {
+		filter.Levels = []model.LogLevel{rule.Condition.Level}
+	}
+
+	// Validate context before expensive log counting
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled before log count", "rule_id", rule.ID, "error", err)
+		return false, fmt.Errorf("context cancelled during rule evaluation: %w", err)
+	}
+
+	// Count matching logs
+	count, err := s.logStore.Count(ctx, filter)
+	if err != nil {
+		s.logger.Error("failed to count logs for rule", "rule_id", rule.ID, "error", err)
+		return false, fmt.Errorf("failed to count logs for rule %s: %w", rule.ID, err)
+	}
+
+	s.logger.Debug("log count completed", "rule_id", rule.ID, "count", count)
+
+	// Check threshold
+	if float64(count) < rule.Threshold {
+		s.logger.Debug("threshold not met", "rule_id", rule.ID, "count", count, "threshold", rule.Threshold)
+		return false, nil
+	}
+
+	// Validate context before triggering alert
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled before alert trigger", "rule_id", rule.ID, "error", err)
+		return false, fmt.Errorf("context cancelled before alert trigger: %w", err)
+	}
+
+	// Trigger alert
+	alert := model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)
+	alert.Details["count"] = count
+	alert.Details["window"] = rule.Window.String()
+	alert.Details["threshold"] = rule.Threshold
+
+	if err := s.alertService.RecordAlert(ctx, alert); err != nil {
+		s.logger.Error("failed to record alert for rule", "rule_id", rule.ID, "error", err)
+		return false, fmt.Errorf("failed to record alert for rule %s: %w", rule.ID, err)
+	}
+
+	// Validate context before updating rule
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled before rule update", "rule_id", rule.ID, "error", err)
+		return true, fmt.Errorf("context cancelled after alert triggered: %w", err)
+	}
+
+	rule.MarkFired(now)
+	if _, err := s.ruleService.UpdateRule(ctx, rule.ID, &model.UpdateRuleRequest{}); err != nil {
+		s.logger.Warn("failed to update rule last_fired_at", "rule_id", rule.ID, "error", err)
+	}
+
+	s.logger.Warn("alert triggered", "rule_id", rule.ID, "rule_name", rule.Name, "count", count)
+	return true, nil
+}
+
+// ScanOnceWithContext performs a single scan with context validation
+func (s *scheduler) ScanOnceWithContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context cancelled before scan: %w", err)
+	}
+
+	rules, err := s.ruleService.ListActiveRules(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list active rules: %w", err)
+	}
+
+	s.logger.Debug("scanning rules", "count", len(rules))
+
+	var alertsTriggered int
+	now := time.Now()
+
+	for _, rule := range rules {
+		if err := ctx.Err(); err != nil {
+			s.logger.Debug("context cancelled during rule scan", "remaining_rules", len(rules)-len(s.filterProcessedRules(rules, rule)))
+			return fmt.Errorf("context cancelled during scan: %w", err)
+		}
+
+		triggered, err := s.evaluateRuleWithContext(ctx, rule, now)
+		if err != nil {
+			if ctx.Err() != nil {
+				s.logger.Info("scan terminated due to context cancellation", "rule_id", rule.ID)
+				break
+			}
+			s.logger.Error("failed to evaluate rule", "rule_id", rule.ID, "error", err)
+			continue
+		}
+		if triggered {
+			alertsTriggered++
+		}
+	}
+
+	s.mu.Lock()
+	s.status.LastScan = &now
+	s.status.RulesScanned = len(rules)
+	s.status.AlertsTriggered = alertsTriggered
+	s.totalAlerts += int64(alertsTriggered)
+	s.status.TotalAlertsTriggered = s.totalAlerts
+	s.mu.Unlock()
+
+	s.logger.Info("rule scan completed", "rules_scanned", len(rules), "alerts_triggered", alertsTriggered)
+	return nil
+}
+
+// filterProcessedRules returns remaining rules after processing
+func (s *scheduler) filterProcessedRules(rules []*model.AlertRule, current *model.AlertRule) []*model.AlertRule {
+	for i, r := range rules {
+		if r.ID == current.ID {
+			return rules[i+1:]
+		}
+	}
+	return nil
+}

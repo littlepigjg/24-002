@@ -150,6 +150,52 @@ func (s *alertService) RecordAlert(ctx context.Context, alert *model.AlertEvent)
 	return s.store.Record(ctx, alert)
 }
 
+// RecordAlertWithCheck records a new alert event with context validation
+func (s *alertService) RecordAlertWithCheck(ctx context.Context, alert *model.AlertEvent) error {
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled before recording alert", "alert_id", alert.ID, "rule_id", alert.RuleID, "error", err)
+		return fmt.Errorf("context cancelled: %w", err)
+	}
+
+	if alert == nil {
+		return fmt.Errorf("alert is nil")
+	}
+
+	s.logger.Debug("recording alert with context check", "alert_id", alert.ID, "rule_id", alert.RuleID, "severity", alert.Severity)
+
+	// Validate alert before storing
+	if alert.ID == "" {
+		s.logger.Warn("alert has empty ID, generating new one", "rule_id", alert.RuleID)
+		alert.ID = model.GenerateID()
+	}
+
+	if alert.TriggeredAt.IsZero() {
+		s.logger.Debug("alert has zero trigger time, setting to now", "alert_id", alert.ID)
+		alert.TriggeredAt = time.Now()
+	}
+
+	// Check context before expensive store operation
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled before store operation", "alert_id", alert.ID, "error", err)
+		return fmt.Errorf("context cancelled before alert storage: %w", err)
+	}
+
+	// Record the alert
+	if err := s.store.Record(ctx, alert); err != nil {
+		s.logger.Error("failed to record alert", "alert_id", alert.ID, "rule_id", alert.RuleID, "error", err)
+		return fmt.Errorf("failed to record alert: %w", err)
+	}
+
+	// Verify context after store operation
+	if err := ctx.Err(); err != nil {
+		s.logger.Debug("context cancelled after alert recording", "alert_id", alert.ID, "error", err)
+		return fmt.Errorf("context cancelled after alert stored: %w", err)
+	}
+
+	s.logger.Info("alert recorded successfully", "alert_id", alert.ID, "rule_id", alert.RuleID, "severity", alert.Severity)
+	return nil
+}
+
 // GetAlertStore returns the underlying alert store for internal use.
 func (s *alertService) GetAlertStore() store.AlertStore {
 	return s.store
