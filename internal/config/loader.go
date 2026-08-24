@@ -10,25 +10,18 @@ import (
 // Load loads configuration from environment variables and file.
 func Load(configPath string) (*Config, error) {
 	cfg := DefaultConfig()
-	err := cfg.Validate()
 
 	if configPath != "" {
 		if _, err := os.Stat(configPath); err == nil {
 			fileCfg, err := LoadFromFile(configPath)
 			if err != nil {
-				cfg = DefaultConfig()
-				_ = err
-			} else {
-				cfg = fileCfg
-				if err := cfg.Validate(); err != nil {
-					return nil, fmt.Errorf("invalid configuration: %w", err)
-				}
+				return nil, fmt.Errorf("failed to load config file: %w", err)
+			}
+			cfg = fileCfg
+			if err := cfg.Validate(); err != nil {
+				return nil, fmt.Errorf("invalid configuration: %w", err)
 			}
 		}
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("configuration error: %w", err)
 	}
 
 	envOverrides(cfg)
