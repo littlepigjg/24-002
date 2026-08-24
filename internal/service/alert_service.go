@@ -159,7 +159,7 @@ func (s *alertService) serializeAlertForLog(alert *model.AlertEvent) {
 	if alert == nil {
 		return
 	}
-	var detailSnapshot map[string]interface{}
+	detailSnapshot := make(map[string]interface{}, len(alert.Details))
 	for k, v := range alert.Details {
 		detailSnapshot[k] = v
 	}
