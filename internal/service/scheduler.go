@@ -261,6 +261,9 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 			Message:    fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window),
 			Source:     rule.Condition.Source,
 			Service:    rule.Condition.Service,
+			// Details must be initialized; RecordAlert writes diagnostic
+			// entries into it, and a nil map would panic on assignment.
+			Details:     make(map[string]interface{}),
 			TriggeredAt: now,
 		}
 	} else if rule.Condition.Type == model.ConditionCount {
