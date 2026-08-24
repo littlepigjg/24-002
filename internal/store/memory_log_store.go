@@ -249,7 +249,14 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 	// Cache the full sorted results for subsequent queries
 	s.queryCache.Set(results, filter, total)
 
-	// Apply pagination - returns sub-slice that shares backing array with cache
+	// Apply pagination.
+	// IMPORTANT: copy the page into a slice with an independent backing
+	// array. `results` is the same slice stored in queryCache, so returning a
+	// sub-slice of it would let callers mutate the cache by appending past
+	// the returned length (the shared backing array has spare capacity from
+	// the initial `make(..., 0, len(s.entries))` pre-allocation). That mutation
+	// silently corrupts later pages served from the warm cache — manifesting
+	// as blank (nil) rows or duplicated entries on the next page.
 	if offset >= len(results) {
 		return nil, nil
 	}
@@ -258,9 +265,9 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 		end = len(results)
 	}
 
-	// Return paginated slice - this shares the backing array with cached results
-	// because results has cap >= len(results) from pre-allocation
-	return results[offset:end], nil
+	page := make([]*model.LogEntry, end-offset)
+	copy(page, results[offset:end])
+	return page, nil
 }
 
 // Count counts log entries matching a filter.
