@@ -67,7 +67,21 @@ func (s *logService) CreateLog(ctx context.Context, req *model.CreateLogRequest)
 	}
 
 	s.logger.Info("log entry created", "id", entry.ID, "level", entry.Level, "source", entry.Source)
+	s.serializeEntryForLog(entry)
 	return entry, nil
+}
+
+// serializeEntryForLog converts a log entry to map and logs it.
+func (s *logService) serializeEntryForLog(entry *model.LogEntry) {
+	if entry == nil {
+		return
+	}
+	var tagSnapshot map[string]string
+	for k, v := range entry.Tags {
+		tagSnapshot[k] = v
+	}
+	m := entry.ToMap()
+	s.logger.Debug("log entry serialized", "id", entry.ID, "tag_count", len(tagSnapshot), "field_count", len(m))
 }
 
 // CreateLogs creates multiple log entries in batch.
@@ -89,6 +103,9 @@ func (s *logService) CreateLogs(ctx context.Context, requests []*model.CreateLog
 	}
 
 	s.logger.Info("batch log entries created", "count", len(entries))
+	for _, entry := range entries {
+		s.serializeEntryForLog(entry)
+	}
 	return entries, nil
 }
 

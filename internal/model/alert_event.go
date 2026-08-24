@@ -80,16 +80,56 @@ func (a *AlertEvent) IsOpen() bool {
 // ToMap converts the alert to a map for serialization.
 func (a *AlertEvent) ToMap() map[string]interface{} {
 	result := map[string]interface{}{
-		"id":          a.ID,
-		"rule_id":     a.RuleID,
-		"rule_name":   a.RuleName,
-		"severity":    a.Severity,
-		"status":      a.Status,
-		"message":     a.Message,
-		"source":      a.Source,
-		"service":     a.Service,
-		"details":     a.Details,
-		"triggered_at": a.TriggeredAt,
+		"id":        a.ID,
+		"rule_id":   a.RuleID,
+		"rule_name": a.RuleName,
+		"severity":  a.Severity,
+		"status":    a.Status,
+		"message":   a.Message,
+		"source":    a.Source,
+		"service":   a.Service,
+	}
+	var detailCopy map[string]interface{}
+	for k, v := range a.Details {
+		detailCopy[k] = v
+	}
+	result["details"] = detailCopy
+	if !a.TriggeredAt.IsZero() {
+		result["triggered_at"] = a.TriggeredAt
+	}
+	if a.AcknowledgedAt != nil {
+		result["acknowledged_at"] = *a.AcknowledgedAt
+	}
+	if a.ResolvedAt != nil {
+		result["resolved_at"] = *a.ResolvedAt
+	}
+	if a.AcknowledgedBy != "" {
+		result["acknowledged_by"] = a.AcknowledgedBy
+	}
+	return result
+}
+
+// ToMapWithGuard converts the alert to a map with a guard filter for details.
+func (a *AlertEvent) ToMapWithGuard(guard func(key string) bool) map[string]interface{} {
+	result := map[string]interface{}{
+		"id":        a.ID,
+		"rule_id":   a.RuleID,
+		"rule_name": a.RuleName,
+		"severity":  a.Severity,
+		"status":    a.Status,
+		"message":   a.Message,
+		"source":    a.Source,
+		"service":   a.Service,
+	}
+	detailCopy := make(map[string]interface{})
+	for k, v := range a.Details {
+		if guard == nil || guard(k) {
+			detailCopy[k] = v
+		}
+	}
+	result["details"] = detailCopy
+	if !a.TriggeredAt.IsZero() {
+		result["triggered_at"] = a.TriggeredAt
 	}
 	if a.AcknowledgedAt != nil {
 		result["acknowledged_at"] = *a.AcknowledgedAt

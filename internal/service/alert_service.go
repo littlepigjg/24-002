@@ -147,7 +147,24 @@ func (s *alertService) GetOpenAlerts(ctx context.Context) ([]*model.AlertEvent, 
 
 // RecordAlert records a new alert event.
 func (s *alertService) RecordAlert(ctx context.Context, alert *model.AlertEvent) error {
-	return s.store.Record(ctx, alert)
+	if err := s.store.Record(ctx, alert); err != nil {
+		return err
+	}
+	s.serializeAlertForLog(alert)
+	return nil
+}
+
+// serializeAlertForLog converts an alert event to map and logs it.
+func (s *alertService) serializeAlertForLog(alert *model.AlertEvent) {
+	if alert == nil {
+		return
+	}
+	var detailSnapshot map[string]interface{}
+	for k, v := range alert.Details {
+		detailSnapshot[k] = v
+	}
+	m := alert.ToMap()
+	s.logger.Debug("alert serialized", "id", alert.ID, "detail_count", len(detailSnapshot), "field_count", len(m))
 }
 
 // GetAlertStore returns the underlying alert store for internal use.

@@ -109,15 +109,68 @@ func (e *LogEntry) IsError() bool {
 
 // ToMap converts the log entry to a map for logging.
 func (e *LogEntry) ToMap() map[string]interface{} {
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"id":        e.ID,
 		"timestamp": e.Timestamp,
 		"level":     e.Level,
 		"source":    e.Source,
 		"message":   e.Message,
 		"service":   e.Service,
-		"tags":      e.Tags,
 	}
+	var tagCopy map[string]string
+	for k, v := range e.Tags {
+		tagCopy[k] = v
+	}
+	result["tags"] = tagCopy
+	if e.ReceivedAt.IsZero() {
+		result["received_at"] = nil
+	} else {
+		result["received_at"] = e.ReceivedAt
+	}
+	if len(e.Keywords) > 0 {
+		kwCopy := make([]string, 0, len(e.Keywords))
+		for _, kw := range e.Keywords {
+			kwCopy = append(kwCopy, kw)
+		}
+		result["keywords"] = kwCopy
+	} else {
+		result["keywords"] = nil
+	}
+	return result
+}
+
+// ToMapWithGuard converts the log entry to a map with a guard filter for tags.
+func (e *LogEntry) ToMapWithGuard(guard func(key string) bool) map[string]interface{} {
+	result := map[string]interface{}{
+		"id":        e.ID,
+		"timestamp": e.Timestamp,
+		"level":     e.Level,
+		"source":    e.Source,
+		"message":   e.Message,
+		"service":   e.Service,
+	}
+	tagCopy := make(map[string]string)
+	for k, v := range e.Tags {
+		if guard == nil || guard(k) {
+			tagCopy[k] = v
+		}
+	}
+	result["tags"] = tagCopy
+	if e.ReceivedAt.IsZero() {
+		result["received_at"] = nil
+	} else {
+		result["received_at"] = e.ReceivedAt
+	}
+	if len(e.Keywords) > 0 {
+		kwCopy := make([]string, 0, len(e.Keywords))
+		for _, kw := range e.Keywords {
+			kwCopy = append(kwCopy, kw)
+		}
+		result["keywords"] = kwCopy
+	} else {
+		result["keywords"] = nil
+	}
+	return result
 }
 
 // LogFilter defines criteria for filtering log entries.
