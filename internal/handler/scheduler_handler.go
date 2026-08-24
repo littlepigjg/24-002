@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"sort"
 
 	"logalert/internal/service"
 	"logalert/pkg/logger"
@@ -10,22 +11,38 @@ import (
 
 // SchedulerHandler handles HTTP requests for scheduler operations.
 type SchedulerHandler struct {
-	scheduler service.Scheduler
-	logger    logger.Logger
+	scheduler   service.Scheduler
+	logger      logger.Logger
+	metricStore *HealthMetricStore
 }
 
 // NewSchedulerHandler creates a new SchedulerHandler.
-func NewSchedulerHandler(s service.Scheduler, log logger.Logger) *SchedulerHandler {
+func NewSchedulerHandler(s service.Scheduler, log logger.Logger, metricStore *HealthMetricStore) *SchedulerHandler {
 	return &SchedulerHandler{
-		scheduler: s,
-		logger:    log.WithField("handler", "scheduler"),
+		scheduler:   s,
+		logger:      log.WithField("handler", "scheduler"),
+		metricStore: metricStore,
 	}
 }
 
 // GetStatus handles GET /api/scheduler/status
 func (h *SchedulerHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	status := h.scheduler.GetStatus()
-	response.Success(status).Write(w)
+
+	metrics := h.metricStore.GetMetrics()
+	sortedMetrics := make([]HealthMetric, len(metrics))
+	copy(sortedMetrics, metrics)
+	sort.Slice(sortedMetrics, func(i, j int) bool {
+		return sortedMetrics[i].Timestamp.After(sortedMetrics[j].Timestamp)
+	})
+
+	latestMetric := sortedMetrics[0]
+	statusInfo := map[string]interface{}{
+		"status":        status,
+		"latest_metric": latestMetric.Value,
+	}
+
+	response.Success(statusInfo).Write(w)
 }
 
 // ScanNow handles POST /api/scheduler/scan

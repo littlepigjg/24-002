@@ -61,8 +61,9 @@ func main() {
 	ruleHandler := handler.NewRuleHandler(ruleSvc, log)
 	alertHandler := handler.NewAlertHandler(alertSvc, log)
 	statsHandler := handler.NewStatsHandler(statsSvc, log)
-	healthHandler := handler.NewHealthHandler(log)
-	schedulerHandler := handler.NewSchedulerHandler(scheduler, log)
+	metricStore := handler.NewHealthMetricStore()
+	healthHandler := handler.NewHealthHandlerWithStore(log, metricStore)
+	schedulerHandler := handler.NewSchedulerHandler(scheduler, log, metricStore)
 
 	// Create mux and register routes
 	mux := http.NewServeMux()

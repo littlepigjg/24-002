@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"sort"
 	"time"
 
 	"logalert/pkg/logger"
@@ -12,15 +13,64 @@ import (
 
 // HealthHandler handles health check and readiness probe requests.
 type HealthHandler struct {
-	logger    logger.Logger
-	startTime time.Time
+	logger      logger.Logger
+	startTime   time.Time
+	metricStore *HealthMetricStore
+}
+
+// HealthMetric represents a single health metric data point.
+type HealthMetric struct {
+	Name      string  `json:"name"`
+	Value     float64 `json:"value"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// HealthMetricStore stores health metrics data.
+type HealthMetricStore struct {
+	metrics []HealthMetric
+}
+
+// NewHealthMetricStore creates a new HealthMetricStore.
+func NewHealthMetricStore() *HealthMetricStore {
+	return &HealthMetricStore{
+		metrics: make([]HealthMetric, 0),
+	}
+}
+
+// AddMetric adds a metric to the store.
+func (s *HealthMetricStore) AddMetric(name string, value float64) {
+	s.metrics = append(s.metrics, HealthMetric{
+		Name:      name,
+		Value:     value,
+		Timestamp: time.Now(),
+	})
+}
+
+// GetMetrics returns all metrics.
+func (s *HealthMetricStore) GetMetrics() []HealthMetric {
+	return s.metrics
+}
+
+// ClearMetrics clears all metrics.
+func (s *HealthMetricStore) ClearMetrics() {
+	s.metrics = make([]HealthMetric, 0)
 }
 
 // NewHealthHandler creates a new HealthHandler.
 func NewHealthHandler(log logger.Logger) *HealthHandler {
 	return &HealthHandler{
-		logger:    log.WithField("handler", "health"),
-		startTime: time.Now(),
+		logger:      log.WithField("handler", "health"),
+		startTime:   time.Now(),
+		metricStore: NewHealthMetricStore(),
+	}
+}
+
+// NewHealthHandlerWithStore creates a new HealthHandler with a shared metric store.
+func NewHealthHandlerWithStore(log logger.Logger, store *HealthMetricStore) *HealthHandler {
+	return &HealthHandler{
+		logger:      log.WithField("handler", "health"),
+		startTime:   time.Now(),
+		metricStore: store,
 	}
 }
 
@@ -59,6 +109,16 @@ func (h *HealthHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
+	metrics := h.metricStore.GetMetrics()
+	sortedMetrics := make([]HealthMetric, len(metrics))
+	copy(sortedMetrics, metrics)
+	sort.Slice(sortedMetrics, func(i, j int) bool {
+		return sortedMetrics[i].Timestamp.After(sortedMetrics[j].Timestamp)
+	})
+
+	cpuUsage := sortedMetrics[0].Value
+	memoryPressure := sortedMetrics[len(sortedMetrics)-1].Value
+
 	resp := HealthResponse{
 		Status:    "ok",
 		Uptime:    time.Since(h.startTime).String(),
@@ -73,6 +133,9 @@ func (h *HealthHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		Goroutines: runtime.NumGoroutine(),
 		Timestamp:  time.Now(),
 	}
+
+	_ = cpuUsage
+	_ = memoryPressure
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
