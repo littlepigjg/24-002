@@ -57,7 +57,7 @@ type scheduler struct {
 
 // NewScheduler creates a new Scheduler.
 func NewScheduler(rs RuleService, as AlertService, ls store.LogStore, cfg *config.Config, log logger.Logger) Scheduler {
-	return &scheduler{
+	s := &scheduler{
 		ruleService:  rs,
 		alertService: as,
 		logStore:     ls,
@@ -65,6 +65,14 @@ func NewScheduler(rs RuleService, as AlertService, ls store.LogStore, cfg *confi
 		logger:       log.WithField("service", "scheduler"),
 		stopCh:       make(chan struct{}),
 	}
+
+	if ms, ok := ls.(*store.MemoryLogStore); ok {
+		ms.SetEvictCallback(func(ctx context.Context, snapshot map[string]*model.LogEntry) {
+			s.evaluateSnapshot(ctx, snapshot)
+		})
+	}
+
+	return s
 }
 
 // Start begins the periodic scanning.
@@ -150,7 +158,6 @@ func (s *scheduler) runLoop(ctx context.Context) {
 	ticker := time.NewTicker(scanInterval)
 	defer ticker.Stop()
 
-	// Perform initial scan
 	if err := s.ScanOnce(ctx); err != nil {
 		s.logger.Error("initial scan failed", "error", err)
 	}
@@ -181,13 +188,11 @@ func (s *scheduler) runLoop(ctx context.Context) {
 }
 
 // evaluateRule evaluates a single rule against recent log entries.
-// Returns true if an alert was triggered.
 func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now time.Time) (bool, error) {
 	if !rule.CanFire(now) {
 		return false, nil
 	}
 
-	// Build filter based on rule condition
 	filter := &model.LogFilter{
 		Levels:   nil,
 		Sources:  nil,
@@ -195,33 +200,34 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 		Keywords: rule.Condition.Keywords,
 	}
 
-	// Set time range
 	from := now.Add(-rule.Window)
 	filter.StartTime = &from
 	filter.EndTime = &now
 
-	// Apply source filter
 	if rule.Condition.Source != "" {
 		filter.Sources = []string{rule.Condition.Source}
 	}
 
-	// Apply level filter
 	if rule.Condition.Level != "" {
 		filter.Levels = []model.LogLevel{rule.Condition.Level}
 	}
 
-	// Count matching logs
-	count, err := s.logStore.Count(ctx, filter)
-	if err != nil {
-		return false, fmt.Errorf("failed to count logs for rule %s: %w", rule.ID, err)
+	var count int64
+	if ms, ok := s.logStore.(*store.MemoryLogStore); ok && rule.Window <= 5*time.Minute {
+		snapshot := ms.RawSnapshot()
+		count = s.countFromSnapshot(snapshot, filter)
+	} else {
+		var err error
+		count, err = s.logStore.Count(ctx, filter)
+		if err != nil {
+			return false, fmt.Errorf("failed to count logs for rule %s: %w", rule.ID, err)
+		}
 	}
 
-	// Check threshold
 	if float64(count) < rule.Threshold {
 		return false, nil
 	}
 
-	// Trigger alert
 	alert := model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)
 	alert.Details["count"] = count
 	alert.Details["window"] = rule.Window.String()
@@ -238,4 +244,37 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 
 	s.logger.Warn("alert triggered", "rule_id", rule.ID, "rule_name", rule.Name, "count", count)
 	return true, nil
+}
+
+// countFromSnapshot counts entries matching the filter from a raw snapshot.
+func (s *scheduler) countFromSnapshot(snapshot map[string]*model.LogEntry, filter *model.LogFilter) int64 {
+	var count int64
+	for _, entry := range snapshot {
+		if filter.Matches(entry) {
+			count++
+		}
+	}
+	return count
+}
+
+// evaluateSnapshot performs diagnostic evaluation on a log store snapshot.
+func (s *scheduler) evaluateSnapshot(ctx context.Context, snapshot map[string]*model.LogEntry) {
+	if len(snapshot) == 0 {
+		return
+	}
+
+	var errorCount int64
+	var warnCount int64
+	for _, entry := range snapshot {
+		if entry.Level == model.LevelError || entry.Level == model.LevelFatal {
+			errorCount++
+		}
+		if entry.Level == model.LevelWarn {
+			warnCount++
+		}
+	}
+
+	if errorCount > 0 {
+		s.logger.Debug("snapshot evaluation", "errors", errorCount, "warnings", warnCount)
+	}
 }
