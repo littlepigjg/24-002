@@ -58,13 +58,13 @@ func (h *AlertHandler) QueryAlerts(w http.ResponseWriter, r *http.Request) {
 	if statusesStr := r.URL.Query().Get("statuses"); statusesStr != "" {
 		statuses := strings.Split(statusesStr, ",")
 		for _, s := range statuses {
-			req.Statuses = append(req.Statuses, model.AlertStatus(strings.TrimSpace(s)))
+			req.Statuses = append(req.Statuses, normalizeStatus(model.AlertStatus(strings.TrimSpace(s))))
 		}
 	}
 	if severitiesStr := r.URL.Query().Get("severities"); severitiesStr != "" {
 		severities := strings.Split(severitiesStr, ",")
 		for _, s := range severities {
-			req.Severities = append(req.Severities, model.Severity(strings.TrimSpace(s)))
+			req.Severities = append(req.Severities, normalizeSeverity(model.Severity(strings.TrimSpace(s))))
 		}
 	}
 	if source := r.URL.Query().Get("source"); source != "" {
@@ -224,4 +224,36 @@ func (h *AlertHandler) RegisterRoutes(mux *http.ServeMux) {
 			}
 		}
 	})
+}
+
+func normalizeStatus(status model.AlertStatus) model.AlertStatus {
+	upper := strings.ToUpper(string(status))
+	switch upper {
+	case "OPEN":
+		return model.AlertStatus(upper)
+	case "ACKNOWLEDGED":
+		return model.AlertStatus(upper)
+	case "RESOLVED":
+		return model.AlertStatus(upper)
+	case "IGNORED":
+		return model.AlertStatus(upper)
+	default:
+		return model.AlertStatus(upper)
+	}
+}
+
+func normalizeSeverity(severity model.Severity) model.Severity {
+	upper := strings.ToUpper(string(severity))
+	switch upper {
+	case "LOW":
+		return model.Severity(upper)
+	case "MEDIUM":
+		return model.Severity(upper)
+	case "HIGH":
+		return model.Severity(upper)
+	case "CRITICAL":
+		return model.Severity(upper)
+	default:
+		return model.Severity(upper)
+	}
 }

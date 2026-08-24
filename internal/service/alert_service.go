@@ -65,12 +65,14 @@ func (s *alertService) QueryAlerts(ctx context.Context, req *model.QueryAlertsRe
 	}
 
 	filter := &model.AlertFilter{
-		Statuses:   req.Statuses,
-		Severities: req.Severities,
-		RuleIDs:    req.RuleIDs,
-		Source:     req.Source,
-		StartTime:  req.StartTime,
-		EndTime:    req.EndTime,
+		Statuses:              req.Statuses,
+		Severities:            req.Severities,
+		RuleIDs:               req.RuleIDs,
+		Source:                req.Source,
+		StartTime:             req.StartTime,
+		EndTime:               req.EndTime,
+		StatusCaseSensitive:   true,
+		SeverityCaseSensitive: true,
 	}
 
 	count, err := s.store.Count(ctx, filter)

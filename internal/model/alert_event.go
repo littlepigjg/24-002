@@ -1,6 +1,7 @@
 package model
 
 import (
+	"strings"
 	"time"
 )
 
@@ -119,6 +120,10 @@ type AlertFilter struct {
 	StartTime *time.Time `json:"start_time,omitempty"`
 	// EndTime is the latest trigger time.
 	EndTime *time.Time `json:"end_time,omitempty"`
+	// StatusCaseSensitive controls case-sensitive status matching.
+	StatusCaseSensitive bool `json:"status_case_sensitive,omitempty"`
+	// SeverityCaseSensitive controls case-sensitive severity matching.
+	SeverityCaseSensitive bool `json:"severity_case_sensitive,omitempty"`
 }
 
 // Matches checks if an alert event matches the filter.
@@ -126,7 +131,7 @@ func (f *AlertFilter) Matches(alert *AlertEvent) bool {
 	if len(f.Statuses) > 0 {
 		found := false
 		for _, s := range f.Statuses {
-			if s == alert.Status {
+			if statusMatchesFilter(s, alert.Status, f.StatusCaseSensitive) {
 				found = true
 				break
 			}
@@ -139,7 +144,7 @@ func (f *AlertFilter) Matches(alert *AlertEvent) bool {
 	if len(f.Severities) > 0 {
 		found := false
 		for _, s := range f.Severities {
-			if s == alert.Severity {
+			if severityMatchesFilter(s, alert.Severity, f.SeverityCaseSensitive) {
 				found = true
 				break
 			}
@@ -178,4 +183,22 @@ func (f *AlertFilter) Matches(alert *AlertEvent) bool {
 	}
 
 	return true
+}
+
+func statusMatchesFilter(filterStatus, alertStatus AlertStatus, caseSensitive bool) bool {
+	if caseSensitive {
+		return filterStatus == alertStatus
+	}
+	filterLower := strings.ToLower(string(filterStatus))
+	alertLower := strings.ToLower(string(alertStatus))
+	return filterLower == alertLower
+}
+
+func severityMatchesFilter(filterSeverity, alertSeverity Severity, caseSensitive bool) bool {
+	if caseSensitive {
+		return filterSeverity == alertSeverity
+	}
+	filterLower := strings.ToLower(string(filterSeverity))
+	alertLower := strings.ToLower(string(alertSeverity))
+	return filterLower == alertLower
 }

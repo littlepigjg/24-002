@@ -216,6 +216,8 @@ func isValidLevel(level LogLevel) bool {
 	switch level {
 	case LevelDebug, LevelInfo, LevelWarn, LevelError, LevelFatal:
 		return true
+	case "debug", "info", "warn", "error", "fatal":
+		return true
 	default:
 		return false
 	}

@@ -2,6 +2,7 @@
 package model
 
 import (
+	"strings"
 	"time"
 )
 
@@ -136,6 +137,8 @@ type LogFilter struct {
 	Service string `json:"service,omitempty"`
 	// Tags filter.
 	Tags map[string]string `json:"tags,omitempty"`
+	// LevelCaseSensitive controls case-sensitive level matching.
+	LevelCaseSensitive bool `json:"level_case_sensitive,omitempty"`
 }
 
 // Matches checks if a log entry matches the filter.
@@ -144,7 +147,7 @@ func (f *LogFilter) Matches(entry *LogEntry) bool {
 	if len(f.Levels) > 0 {
 		levelMatch := false
 		for _, l := range f.Levels {
-			if l == entry.Level {
+			if levelMatchesFilter(l, entry.Level, f.LevelCaseSensitive) {
 				levelMatch = true
 				break
 			}
@@ -235,4 +238,13 @@ func searchString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func levelMatchesFilter(filterLevel, entryLevel LogLevel, caseSensitive bool) bool {
+	if caseSensitive {
+		return filterLevel == entryLevel
+	}
+	filterUpper := strings.ToUpper(string(filterLevel))
+	entryUpper := strings.ToUpper(string(entryLevel))
+	return filterUpper == entryUpper
 }

@@ -43,7 +43,8 @@ func (h *LogHandler) CreateLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate
+	req.Level = normalizeLevel(req.Level)
+
 	errors := req.Validate()
 	if len(errors) > 0 {
 		response.Error(400, strings.Join(errors, "; ")).Write(w)
@@ -58,6 +59,24 @@ func (h *LogHandler) CreateLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.Success(entry).Write(w)
+}
+
+func normalizeLevel(level model.LogLevel) model.LogLevel {
+	lower := strings.ToLower(string(level))
+	switch lower {
+	case "info":
+		return model.LogLevel(lower)
+	case "warn":
+		return model.LogLevel(lower)
+	case "error":
+		return model.LogLevel(lower)
+	case "debug":
+		return model.LogLevel(lower)
+	case "fatal":
+		return model.LogLevel(lower)
+	default:
+		return model.LogLevel(lower)
+	}
 }
 
 // CreateLogs handles POST /api/logs/batch

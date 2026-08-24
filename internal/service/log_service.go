@@ -108,12 +108,13 @@ func (s *logService) QueryLogs(ctx context.Context, req *model.QueryLogsRequest)
 	}
 
 	filter := &model.LogFilter{
-		Levels:    req.Levels,
-		Sources:   req.Sources,
-		Service:   req.Service,
-		Keywords:  req.Keywords,
-		StartTime: req.StartTime,
-		EndTime:   req.EndTime,
+		Levels:             req.Levels,
+		Sources:            req.Sources,
+		Service:            req.Service,
+		Keywords:           req.Keywords,
+		StartTime:          req.StartTime,
+		EndTime:            req.EndTime,
+		LevelCaseSensitive: true,
 	}
 
 	count, err := s.store.Count(ctx, filter)
