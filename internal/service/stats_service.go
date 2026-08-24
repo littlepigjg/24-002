@@ -106,7 +106,11 @@ func (s *statsService) GetErrorRateTrend(ctx context.Context, req *model.StatsRe
 				Severities: []model.Severity{model.SeverityHigh, model.SeverityCritical},
 			}
 
-			alertSub := alertEvents[:]
+			// Copy the slice before filtering: FilterAlertEvents compacts in
+			// place and would otherwise mutate alertEvents (shared backing
+			// array), corrupting the totalAlerts count computed below.
+			alertSub := make([]*model.AlertEvent, len(alertEvents))
+			copy(alertSub, alertEvents)
 			filteredAlerts := store.FilterAlertEvents(alertSub, sevFilter)
 
 			var totalAlerts int64
@@ -122,7 +126,9 @@ func (s *statsService) GetErrorRateTrend(ctx context.Context, req *model.StatsRe
 			logEntries, logErr := s.logStore.Query(ctx, nil, 500, 0)
 			var logMatchRatio float64
 			if logErr == nil && len(logEntries) > 0 {
-				logSub := logEntries[:]
+				// Copy for the same reason: FilterLogEntries compacts in place.
+				logSub := make([]*model.LogEntry, len(logEntries))
+				copy(logSub, logEntries)
 				filteredLogs := store.FilterLogEntries(logSub, logFilter)
 
 				var totalLogs int64
