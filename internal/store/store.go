@@ -102,6 +102,8 @@ type AlertStore interface {
 	GetByStatus(ctx context.Context, status model.AlertStatus, limit, offset int) ([]*model.AlertEvent, error)
 	// ListRecent returns the most recent alerts.
 	ListRecent(ctx context.Context, limit int) ([]*model.AlertEvent, error)
+	// ListAll returns all alerts.
+	ListAll(ctx context.Context) ([]*model.AlertEvent, error)
 	// Delete removes an alert by ID.
 	Delete(ctx context.Context, id string) error
 	// DeleteOld removes alerts older than the specified time.

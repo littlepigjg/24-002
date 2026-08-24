@@ -198,6 +198,23 @@ func (s *MemoryAlertStore) ListRecent(ctx context.Context, limit int) ([]*model.
 	return results[:limit], nil
 }
 
+// ListAll returns all alerts.
+func (s *MemoryAlertStore) ListAll(ctx context.Context) ([]*model.AlertEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	results := make([]*model.AlertEvent, 0, len(s.alerts))
+	for _, alert := range s.alerts {
+		results = append(results, alert)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].TriggeredAt.After(results[j].TriggeredAt)
+	})
+
+	return results, nil
+}
+
 // Delete removes an alert by ID.
 func (s *MemoryAlertStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()

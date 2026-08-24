@@ -16,9 +16,10 @@ import (
 
 // FilePersistence handles saving/loading data to/from files.
 type FilePersistence struct {
-	mu      sync.Mutex
-	dir     string
-	logger  logger.Logger
+	mu             sync.Mutex
+	dir            string
+	logger         logger.Logger
+	faultInjector  func() error
 }
 
 // NewFilePersistence creates a new FilePersistence.
@@ -41,6 +42,12 @@ func NewFilePersistence(dir string, log logger.Logger) (*FilePersistence, error)
 func (fp *FilePersistence) SaveLogs(ctx context.Context, entries []*model.LogEntry) error {
 	fp.mu.Lock()
 	defer fp.mu.Unlock()
+
+	if fp.faultInjector != nil {
+		if err := fp.faultInjector(); err != nil {
+			return fmt.Errorf("fault injection before save logs: %w", err)
+		}
+	}
 
 	path := filepath.Join(fp.dir, "logs.json")
 	data, err := json.MarshalIndent(entries, "", "  ")
@@ -84,6 +91,12 @@ func (fp *FilePersistence) SaveRules(ctx context.Context, rules []*model.AlertRu
 	fp.mu.Lock()
 	defer fp.mu.Unlock()
 
+	if fp.faultInjector != nil {
+		if err := fp.faultInjector(); err != nil {
+			return fmt.Errorf("fault injection before save rules: %w", err)
+		}
+	}
+
 	path := filepath.Join(fp.dir, "rules.json")
 	data, err := json.MarshalIndent(rules, "", "  ")
 	if err != nil {
@@ -125,6 +138,12 @@ func (fp *FilePersistence) LoadRules(ctx context.Context) ([]*model.AlertRule, e
 func (fp *FilePersistence) SaveAlerts(ctx context.Context, alerts []*model.AlertEvent) error {
 	fp.mu.Lock()
 	defer fp.mu.Unlock()
+
+	if fp.faultInjector != nil {
+		if err := fp.faultInjector(); err != nil {
+			return fmt.Errorf("fault injection before save alerts: %w", err)
+		}
+	}
 
 	path := filepath.Join(fp.dir, "alerts.json")
 	data, err := json.MarshalIndent(alerts, "", "  ")
@@ -179,6 +198,65 @@ func (fp *FilePersistence) SaveState(ctx context.Context, logEntries []*model.Lo
 	return nil
 }
 
+// SaveStateWithAtomic saves state with atomic file operations (temp file + rename).
+func (fp *FilePersistence) SaveStateWithAtomic(ctx context.Context, logEntries []*model.LogEntry, rules []*model.AlertRule, alerts []*model.AlertEvent) error {
+	fp.mu.Lock()
+	defer fp.mu.Unlock()
+
+	if fp.faultInjector != nil {
+		if err := fp.faultInjector(); err != nil {
+			return fmt.Errorf("fault injection before atomic save: %w", err)
+		}
+	}
+
+	logsData, err := json.MarshalIndent(logEntries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal logs: %w", err)
+	}
+	rulesData, err := json.MarshalIndent(rules, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal rules: %w", err)
+	}
+	alertsData, err := json.MarshalIndent(alerts, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal alerts: %w", err)
+	}
+
+	logsPath := filepath.Join(fp.dir, "logs.json")
+	rulesPath := filepath.Join(fp.dir, "rules.json")
+	alertsPath := filepath.Join(fp.dir, "alerts.json")
+
+	logsTmpPath := logsPath + ".tmp"
+	rulesTmpPath := rulesPath + ".tmp"
+	alertsTmpPath := alertsPath + ".tmp"
+
+	if err := os.WriteFile(logsTmpPath, logsData, 0644); err != nil {
+		return fmt.Errorf("failed to write logs temp file: %w", err)
+	}
+	if err := os.WriteFile(rulesTmpPath, rulesData, 0644); err != nil {
+		os.Remove(logsTmpPath)
+		return fmt.Errorf("failed to write rules temp file: %w", err)
+	}
+	if err := os.WriteFile(alertsTmpPath, alertsData, 0644); err != nil {
+		os.Remove(logsTmpPath)
+		os.Remove(rulesTmpPath)
+		return fmt.Errorf("failed to write alerts temp file: %w", err)
+	}
+
+	if err := os.Rename(logsTmpPath, logsPath); err != nil {
+		return fmt.Errorf("failed to rename logs file: %w", err)
+	}
+	if err := os.Rename(rulesTmpPath, rulesPath); err != nil {
+		return fmt.Errorf("failed to rename rules file: %w", err)
+	}
+	if err := os.Rename(alertsTmpPath, alertsPath); err != nil {
+		return fmt.Errorf("failed to rename alerts file: %w", err)
+	}
+
+	fp.logger.Info("state saved atomically to file")
+	return nil
+}
+
 // LoadState loads the entire application state.
 func (fp *FilePersistence) LoadState(ctx context.Context) ([]*model.LogEntry, []*model.AlertRule, []*model.AlertEvent, error) {
 	logs, err := fp.LoadLogs(ctx)
@@ -198,6 +276,15 @@ func (fp *FilePersistence) LoadState(ctx context.Context) ([]*model.LogEntry, []
 
 	fp.logger.Info("state loaded from file", "logs", len(logs), "rules", len(rules), "alerts", len(alerts))
 	return logs, rules, alerts, nil
+}
+
+// SetFaultInjector sets a fault injection function for chaos engineering testing.
+// The fault injector is called before each save operation; if it returns an error,
+// that error is propagated to simulate I/O failures.
+func (fp *FilePersistence) SetFaultInjector(fn func() error) {
+	fp.mu.Lock()
+	defer fp.mu.Unlock()
+	fp.faultInjector = fn
 }
 
 // Now returns the current time (for consistent timestamps).

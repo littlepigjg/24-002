@@ -20,14 +20,20 @@ type CleanupService interface {
 	Stop()
 	// CleanupOnce performs a single cleanup pass.
 	CleanupOnce(ctx context.Context) error
+	// SetFileStore sets the file persistence store for state saving.
+	SetFileStore(fp *store.FilePersistence)
+	// SetRuleStore sets the rule store for state saving.
+	SetRuleStore(rs store.RuleStore)
 }
 
 // cleanupService is the default implementation of CleanupService.
 type cleanupService struct {
-	logStore  store.LogStore
+	logStore   store.LogStore
 	alertStore store.AlertStore
-	config    *config.Config
-	logger    logger.Logger
+	ruleStore  store.RuleStore
+	config     *config.Config
+	logger     logger.Logger
+	fileStore  *store.FilePersistence
 
 	running bool
 	stopCh  chan struct{}
@@ -72,7 +78,6 @@ func (s *cleanupService) Stop() {
 func (s *cleanupService) CleanupOnce(ctx context.Context) error {
 	cutoff := time.Now().Add(-7 * 24 * time.Hour)
 
-	// Delete old logs
 	logDeleted, err := s.logStore.DeleteExpired(ctx, cutoff)
 	if err != nil {
 		s.logger.Error("failed to delete expired logs", "error", err)
@@ -80,7 +85,6 @@ func (s *cleanupService) CleanupOnce(ctx context.Context) error {
 		s.logger.Info("expired logs cleaned up", "count", logDeleted)
 	}
 
-	// Delete old alerts
 	alertDeleted, err := s.alertStore.DeleteOld(ctx, cutoff)
 	if err != nil {
 		s.logger.Error("failed to delete old alerts", "error", err)
@@ -88,7 +92,48 @@ func (s *cleanupService) CleanupOnce(ctx context.Context) error {
 		s.logger.Info("old alerts cleaned up", "count", alertDeleted)
 	}
 
+	if s.fileStore != nil {
+		logs, err := s.logStore.Query(ctx, nil, 100000000, 0)
+		if err != nil {
+			s.logger.Error("failed to query logs for state save", "error", err)
+		}
+
+		var rules []*model.AlertRule
+		if s.ruleStore != nil {
+			allRules, err := s.ruleStore.List(ctx)
+			if err != nil {
+				s.logger.Error("failed to list rules for state save", "error", err)
+			} else {
+				rules = allRules
+			}
+		}
+
+		var alerts []*model.AlertEvent
+		allAlerts, err := s.alertStore.ListAll(ctx)
+		if err != nil {
+			s.logger.Error("failed to list alerts for state save", "error", err)
+		} else {
+			alerts = allAlerts
+		}
+
+		if err := s.fileStore.SaveState(ctx, logs, rules, alerts); err != nil {
+			s.logger.Error("failed to save state after cleanup", "error", err)
+		}
+
+		s.logger.Info("state saved after cleanup", "logs", len(logs), "rules", len(rules), "alerts", len(alerts))
+	}
+
 	return nil
+}
+
+// SetFileStore sets the file persistence store for state saving.
+func (s *cleanupService) SetFileStore(fp *store.FilePersistence) {
+	s.fileStore = fp
+}
+
+// SetRuleStore sets the rule store for state saving.
+func (s *cleanupService) SetRuleStore(rs store.RuleStore) {
+	s.ruleStore = rs
 }
 
 // runLoop is the main cleanup loop.
