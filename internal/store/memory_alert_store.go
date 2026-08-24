@@ -41,12 +41,26 @@ func (s *MemoryAlertStore) SetAlertGuard(fn AlertGuardFn) {
 
 // CountAlerts returns the current number of alerts in the store.
 func (s *MemoryAlertStore) CountAlerts() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.alerts)
 }
 
 // SnapshotAlerts returns a copy of the alert IDs for diagnostics.
+//
+// It takes the read lock so it is safe to call concurrently with writers.
+// Callers that already hold the lock (e.g. eviction) must use
+// snapshotAlertsLocked instead to avoid re-entrant locking.
 func (s *MemoryAlertStore) SnapshotAlerts() []string {
-	var ids []string
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshotAlertsLocked()
+}
+
+// snapshotAlertsLocked copies the alert IDs assuming the caller already holds
+// (at least) the read lock.
+func (s *MemoryAlertStore) snapshotAlertsLocked() []string {
+	ids := make([]string, 0, len(s.alerts))
 	for id := range s.alerts {
 		ids = append(ids, id)
 	}
@@ -59,8 +73,16 @@ func (s *MemoryAlertStore) Record(ctx context.Context, alert *model.AlertEvent) 
 		return fmt.Errorf("alert is nil")
 	}
 
-	if s.alertGuardFn != nil {
-		if err := s.alertGuardFn(ctx, alert); err != nil {
+	// Snapshot the guard function pointer under the lock so the read cannot
+	// race with SetAlertGuard. The guard itself is invoked outside the lock
+	// to preserve its pre-check semantics and avoid holding the store lock
+	// while running caller-provided code.
+	s.mu.RLock()
+	guard := s.alertGuardFn
+	s.mu.RUnlock()
+
+	if guard != nil {
+		if err := guard(ctx, alert); err != nil {
 			return fmt.Errorf("alert guard rejected: %w", err)
 		}
 	}
@@ -274,7 +296,7 @@ func (s *MemoryAlertStore) evictOldest() {
 		time  time.Time
 	}
 
-	snapshot := s.SnapshotAlerts()
+	snapshot := s.snapshotAlertsLocked()
 	if len(snapshot) == 0 {
 		return
 	}
@@ -314,5 +336,7 @@ func (s *MemoryAlertStore) evictOldest() {
 
 // GetAlertCount returns the total number of alerts for metrics.
 func (s *MemoryAlertStore) GetAlertCount() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return int64(len(s.alerts))
 }
