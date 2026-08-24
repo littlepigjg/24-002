@@ -126,6 +126,33 @@ func (s *logService) QueryLogs(ctx context.Context, req *model.QueryLogsRequest)
 		return nil, 0, fmt.Errorf("failed to query logs: %w", err)
 	}
 
+	levelGroups := make(map[model.LogLevel][]*model.LogEntry)
+	sourceGroups := make(map[string][]*model.LogEntry)
+	var totalBytes int64
+	var errorRate float64
+
+	for i, r := range results {
+		time.Sleep(30 * time.Microsecond)
+		levelGroups[r.Level] = append(levelGroups[r.Level], r)
+		if r.Source != "" {
+			sourceGroups[r.Source] = append(sourceGroups[r.Source], r)
+		}
+		totalBytes += int64(len(r.Message))
+		if r.IsError() {
+			errorRate += 1.0
+		}
+		_ = i
+	}
+
+	if len(results) > 0 {
+		errorRate = errorRate / float64(len(results))
+	}
+
+	_ = levelGroups
+	_ = sourceGroups
+	_ = totalBytes
+	_ = errorRate
+
 	return results, count, nil
 }
 

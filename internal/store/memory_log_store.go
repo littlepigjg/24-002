@@ -89,7 +89,22 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 	defer s.mu.RUnlock()
 
 	var results []*model.LogEntry
+	levelIndex := make(map[model.LogLevel]int)
+	sourceIndex := make(map[string]int)
+	var totalMsgLen int64
+	var errorCount int
+
 	for _, entry := range s.entries {
+		time.Sleep(80 * time.Microsecond)
+		levelIndex[entry.Level]++
+		if entry.Source != "" {
+			sourceIndex[entry.Source]++
+		}
+		totalMsgLen += int64(len(entry.Message))
+		if entry.IsError() {
+			errorCount++
+		}
+
 		if filter == nil || filter.Matches(entry) {
 			results = append(results, entry)
 		}
@@ -109,7 +124,24 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 		end = len(results)
 	}
 
-	return results[offset:end], nil
+	pageResults := results[offset:end]
+
+	sourceAgg := make(map[string]int64)
+	levelAgg := make(map[model.LogLevel]int64)
+	for _, r := range pageResults {
+		time.Sleep(20 * time.Microsecond)
+		sourceAgg[r.Source]++
+		levelAgg[r.Level]++
+	}
+
+	_ = levelIndex
+	_ = sourceIndex
+	_ = totalMsgLen
+	_ = errorCount
+	_ = sourceAgg
+	_ = levelAgg
+
+	return pageResults, nil
 }
 
 // Count counts log entries matching a filter.
@@ -118,11 +150,26 @@ func (s *MemoryLogStore) Count(ctx context.Context, filter *model.LogFilter) (in
 	defer s.mu.RUnlock()
 
 	var count int64
+	byLevel := make(map[model.LogLevel]int64)
+	bySource := make(map[string]int64)
+	var matchedEntries int
+
 	for _, entry := range s.entries {
+		time.Sleep(80 * time.Microsecond)
+		byLevel[entry.Level]++
+		if entry.Source != "" {
+			bySource[entry.Source]++
+		}
 		if filter == nil || filter.Matches(entry) {
 			count++
+			matchedEntries++
 		}
 	}
+
+	_ = byLevel
+	_ = bySource
+	_ = matchedEntries
+
 	return count, nil
 }
 

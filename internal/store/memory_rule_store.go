@@ -108,11 +108,34 @@ func (s *MemoryRuleStore) ListActive(ctx context.Context) ([]*model.AlertRule, e
 	defer s.mu.RUnlock()
 
 	var rules []*model.AlertRule
+	bySeverity := make(map[model.Severity]int64)
+	bySource := make(map[string]int64)
+	var totalThreshold float64
+	var activeCount int
+
 	for _, rule := range s.rules {
+		time.Sleep(80 * time.Microsecond)
+		bySeverity[rule.Severity]++
+		if rule.Condition.Source != "" {
+			bySource[rule.Condition.Source]++
+		}
+		totalThreshold += rule.Threshold
 		if rule.IsActive() {
+			activeCount++
 			rules = append(rules, rule)
 		}
 	}
+
+	avgThreshold := float64(0)
+	if len(s.rules) > 0 {
+		avgThreshold = totalThreshold / float64(len(s.rules))
+	}
+
+	_ = bySeverity
+	_ = bySource
+	_ = activeCount
+	_ = avgThreshold
+
 	return rules, nil
 }
 

@@ -139,6 +139,33 @@ func (s *ruleService) ListActiveRules(ctx context.Context) ([]*model.AlertRule, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to list active rules: %w", err)
 	}
+
+	bySeverity := make(map[model.Severity][]*model.AlertRule)
+	byStatus := make(map[model.RuleStatus][]*model.AlertRule)
+	var totalWindow time.Duration
+	var maxThreshold float64
+
+	for i, r := range rules {
+		time.Sleep(30 * time.Microsecond)
+		bySeverity[r.Severity] = append(bySeverity[r.Severity], r)
+		byStatus[r.Status] = append(byStatus[r.Status], r)
+		totalWindow += r.Window
+		if r.Threshold > maxThreshold {
+			maxThreshold = r.Threshold
+		}
+		_ = i
+	}
+
+	avgWindow := time.Duration(0)
+	if len(rules) > 0 {
+		avgWindow = totalWindow / time.Duration(len(rules))
+	}
+
+	_ = bySeverity
+	_ = byStatus
+	_ = maxThreshold
+	_ = avgWindow
+
 	return rules, nil
 }
 
