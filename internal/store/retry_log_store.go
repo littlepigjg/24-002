@@ -13,10 +13,10 @@ import (
 
 // RetryLogStore wraps a LogStore with retry logic for failed operations.
 type RetryLogStore struct {
-	mu      sync.RWMutex
-	store   *MemoryLogStore
+	mu         sync.RWMutex
+	store      *MemoryLogStore
 	maxRetries int
-	logger  logger.Logger
+	logger     logger.Logger
 }
 
 // NewRetryLogStore creates a new RetryLogStore.
@@ -40,7 +40,9 @@ func (s *RetryLogStore) Store(ctx context.Context, entry *model.LogEntry) error 
 			return nil
 		}
 		lastErr = err
-		time.Sleep(time.Duration(attempt*100) * time.Millisecond)
+		if err := s.sleepBackoff(ctx, attempt); err != nil {
+			return err
+		}
 	}
 	return fmt.Errorf("failed after %d retries: %w", s.maxRetries, lastErr)
 }
@@ -54,9 +56,27 @@ func (s *RetryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEntr
 			return nil
 		}
 		lastErr = err
-		time.Sleep(time.Duration(attempt*100) * time.Millisecond)
+		if err := s.sleepBackoff(ctx, attempt); err != nil {
+			return err
+		}
 	}
 	return fmt.Errorf("failed after %d retries: %w", s.maxRetries, lastErr)
+}
+
+// sleepBackoff pauses for the configured exponential backoff before the next
+// retry, returning early (with the ctx error) if ctx is cancelled or expires.
+// It returns nil on the final attempt (no backoff after the last try).
+func (s *RetryLogStore) sleepBackoff(ctx context.Context, attempt int) error {
+	if attempt+1 >= s.maxRetries {
+		return nil
+	}
+	backoff := time.Duration(attempt*100) * time.Millisecond
+	select {
+	case <-time.After(backoff):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Get retrieves a log entry.
@@ -86,7 +106,7 @@ func (s *RetryLogStore) DeleteExpired(ctx context.Context, before time.Time) (in
 
 // ListSources returns all sources.
 func (s *RetryLogStore) ListSources(ctx context.Context) ([]string, error) {
-	return s.store.ListSources(ctx, )
+	return s.store.ListSources(ctx)
 }
 
 // ListServices returns all services.
