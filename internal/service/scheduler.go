@@ -169,6 +169,8 @@ func (s *scheduler) runLoop(ctx context.Context) {
 }
 
 func (s *scheduler) cleanupLoop(ctx context.Context) {
+	defer s.startWg.Done()
+
 	cleanupInterval := 1 * time.Minute
 	alertRetention := 24 * time.Hour
 	logRetention := 7 * 24 * time.Hour
@@ -210,7 +212,6 @@ func (s *scheduler) cleanupLoop(ctx context.Context) {
 				s.logger.Debug("expired logs cleaned", "count", deletedLogs)
 
 				s.logger.Info("cleanup cycle completed", "alerts_deleted", deletedAlerts, "logs_deleted", deletedLogs)
-				s.startWg.Done()
 				return
 			}
 
