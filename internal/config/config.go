@@ -50,6 +50,63 @@ type StorageConfig struct {
 	PersistToFile bool `json:"persist_to_file"`
 	// DataDir is the directory for data persistence.
 	DataDir string `json:"data_dir"`
+	// URLFilePath is the path to the URL data file.
+	urlFilePath string
+	// LogFilePath is the path to the access log data file.
+	logFilePath string
+	// SyncInterval is the interval for syncing data to disk.
+	syncInterval time.Duration
+	// flushOnWrite controls whether data is flushed to disk on every write.
+	flushOnWrite bool
+}
+
+// URLFilePath sets the URL file path.
+func (s *StorageConfig) URLFilePath(path string) {
+	s.urlFilePath = path
+}
+
+// LogFilePath sets the log file path.
+func (s *StorageConfig) LogFilePath(path string) {
+	s.logFilePath = path
+}
+
+// SyncInterval sets the sync interval.
+func (s *StorageConfig) SyncInterval(d time.Duration) {
+	s.syncInterval = d
+}
+
+// FlushOnWrite sets the flush on write flag.
+func (s *StorageConfig) FlushOnWrite(b bool) {
+	s.flushOnWrite = b
+}
+
+// GetURLFilePath returns the URL file path.
+func (s *StorageConfig) GetURLFilePath() string {
+	if s.urlFilePath == "" {
+		return s.DataDir + "/urls.json"
+	}
+	return s.urlFilePath
+}
+
+// GetLogFilePath returns the log file path.
+func (s *StorageConfig) GetLogFilePath() string {
+	if s.logFilePath == "" {
+		return s.DataDir + "/access_logs.json"
+	}
+	return s.logFilePath
+}
+
+// GetSyncInterval returns the sync interval.
+func (s *StorageConfig) GetSyncInterval() time.Duration {
+	if s.syncInterval == 0 {
+		return 5 * time.Second
+	}
+	return s.syncInterval
+}
+
+// GetFlushOnWrite returns whether to flush on write.
+func (s *StorageConfig) GetFlushOnWrite() bool {
+	return s.flushOnWrite
 }
 
 // AlertConfig holds alert rule configuration.

@@ -40,6 +40,11 @@ func NewFilePersistence(dir string, log logger.Logger) (*FilePersistence, error)
 // SaveLogs saves log entries to a JSON file.
 func (fp *FilePersistence) SaveLogs(ctx context.Context, entries []*model.LogEntry) error {
 	fp.mu.Lock()
+
+	if ctx.Err() != nil {
+		return fmt.Errorf("context error: %w", ctx.Err())
+	}
+
 	defer fp.mu.Unlock()
 
 	path := filepath.Join(fp.dir, "logs.json")

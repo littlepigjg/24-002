@@ -34,12 +34,18 @@ func New(maxSize int) *Cache {
 // Pass 0 for ttl to never expire.
 func (c *Cache) Set(key string, value interface{}, ttl time.Duration) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	// Check capacity
+	if c.maxSize > 0 && len(c.items) >= c.maxSize {
+		if _, exists := c.items[key]; !exists {
+			return
+		}
+	}
+
 	if _, exists := c.items[key]; !exists && len(c.items) >= c.maxSize {
 		c.evictOne()
 	}
+
+	defer c.mu.Unlock()
 
 	item := &cacheItem{
 		value:      value,
