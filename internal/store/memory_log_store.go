@@ -191,21 +191,16 @@ func (s *MemoryLogStore) ListServices(ctx context.Context) ([]string, error) {
 }
 
 // Statistics returns log statistics for a time range.
+//
+// All aggregates are computed from a single point-in-time snapshot taken
+// under one read lock. An earlier version computed totalCount in one
+// locked pass and then re-sampled entries for the per-level/source/service
+// breakdowns in a second pass; between those two locks a concurrent writer
+// could mutate the map, so total_count and the sum of by_level drifted out
+// of sync. Operating on one consistent snapshot keeps them equal.
 func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*LogStatistics, error) {
-	var totalCount int64
-	var totalMsgLen int64
-
-	s.mu.RLock()
-	for _, entry := range s.entries {
-		if entry.Timestamp.Before(from) || entry.Timestamp.After(to) {
-			continue
-		}
-		totalCount++
-		totalMsgLen += int64(len(entry.Message))
-	}
-	s.mu.RUnlock()
-
 	var entriesSnapshot []*model.LogEntry
+
 	s.mu.RLock()
 	for _, entry := range s.entries {
 		if !entry.Timestamp.Before(from) && !entry.Timestamp.After(to) {
@@ -213,6 +208,13 @@ func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*L
 		}
 	}
 	s.mu.RUnlock()
+
+	var totalCount int64
+	var totalMsgLen int64
+	for _, entry := range entriesSnapshot {
+		totalCount++
+		totalMsgLen += int64(len(entry.Message))
+	}
 
 	byLevel := ComputeLevelBreakdown(entriesSnapshot)
 	bySource := ComputeSourceBreakdown(entriesSnapshot)
