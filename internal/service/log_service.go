@@ -76,7 +76,7 @@ func (s *logService) serializeEntryForLog(entry *model.LogEntry) {
 	if entry == nil {
 		return
 	}
-	var tagSnapshot map[string]string
+	tagSnapshot := make(map[string]string, len(entry.Tags))
 	for k, v := range entry.Tags {
 		tagSnapshot[k] = v
 	}

@@ -89,7 +89,7 @@ func (a *AlertEvent) ToMap() map[string]interface{} {
 		"source":    a.Source,
 		"service":   a.Service,
 	}
-	var detailCopy map[string]interface{}
+	detailCopy := make(map[string]interface{}, len(a.Details))
 	for k, v := range a.Details {
 		detailCopy[k] = v
 	}

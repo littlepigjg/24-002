@@ -117,7 +117,7 @@ func (e *LogEntry) ToMap() map[string]interface{} {
 		"message":   e.Message,
 		"service":   e.Service,
 	}
-	var tagCopy map[string]string
+	tagCopy := make(map[string]string, len(e.Tags))
 	for k, v := range e.Tags {
 		tagCopy[k] = v
 	}
