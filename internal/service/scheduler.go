@@ -1,0 +1,316 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"logalert/internal/config"
+	"logalert/internal/model"
+	"logalert/internal/store"
+	"logalert/pkg/logger"
+)
+
+// Scheduler handles periodic rule scanning and alert triggering.
+type Scheduler interface {
+	// Start begins the periodic scanning.
+	Start(ctx context.Context) error
+	// Stop halts the periodic scanning.
+	Stop()
+	// ScanOnce performs a single scan of all active rules.
+	ScanOnce(ctx context.Context) error
+	// GetStatus returns the scheduler status.
+	GetStatus() SchedulerStatus
+	// AwaitIdle waits for all background goroutines to finish.
+	AwaitIdle(timeout time.Duration) bool
+}
+
+// SchedulerStatus represents the current state of the scheduler.
+type SchedulerStatus struct {
+	// Running indicates if the scheduler is active.
+	Running bool `json:"running"`
+	// LastScan is the time of the last scan.
+	LastScan *time.Time `json:"last_scan,omitempty"`
+	// NextScan is the expected time of the next scan.
+	NextScan *time.Time `json:"next_scan,omitempty"`
+	// RulesScanned is the number of rules in the last scan.
+	RulesScanned int `json:"rules_scanned"`
+	// AlertsTriggered is the number of alerts triggered in the last scan.
+	AlertsTriggered int `json:"alerts_triggered"`
+	// TotalAlertsTriggered is the total alerts triggered since start.
+	TotalAlertsTriggered int64 `json:"total_alerts_triggered"`
+}
+
+// scheduler is the default implementation of Scheduler.
+type scheduler struct {
+	ruleService  RuleService
+	alertService AlertService
+	logStore     store.LogStore
+	config       *config.Config
+	logger       logger.Logger
+
+	mu            sync.Mutex
+	running       bool
+	stopCh        chan struct{}
+	status        SchedulerStatus
+	totalAlerts   int64
+
+	scanNotifyCh chan struct{}
+	scanDoneCh   chan struct{}
+	notifyWG     sync.WaitGroup
+	scanWG       sync.WaitGroup
+	idleMu       sync.Mutex
+	idleCond     *sync.Cond
+	idleActive   int
+}
+
+// NewScheduler creates a new Scheduler.
+func NewScheduler(rs RuleService, as AlertService, ls store.LogStore, cfg *config.Config, log logger.Logger) Scheduler {
+	s := &scheduler{
+		ruleService:  rs,
+		alertService: as,
+		logStore:     ls,
+		config:       cfg,
+		logger:       log.WithField("service", "scheduler"),
+		stopCh:       make(chan struct{}),
+	}
+	s.idleCond = sync.NewCond(&s.idleMu)
+	return s
+}
+
+// Start begins the periodic scanning.
+func (s *scheduler) Start(ctx context.Context) error {
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		return fmt.Errorf("scheduler is already running")
+	}
+	s.running = true
+	s.stopCh = make(chan struct{})
+	s.scanNotifyCh = make(chan struct{}, 1)
+	s.scanDoneCh = make(chan struct{}, 1)
+	s.mu.Unlock()
+
+	s.logger.Info("scheduler started", "interval", s.config.Scheduler.ScanInterval)
+
+	s.notifyWG.Add(1)
+	go s.runScanNotifier()
+
+	s.scanWG.Add(1)
+	go s.runLoop(ctx)
+
+	return nil
+}
+
+// Stop halts the periodic scanning.
+func (s *scheduler) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.running {
+		return
+	}
+
+	close(s.stopCh)
+	s.running = false
+	s.logger.Info("scheduler stopped")
+}
+
+// AwaitIdle waits for all background goroutines to finish.
+func (s *scheduler) AwaitIdle(timeout time.Duration) bool {
+	deadline := time.After(timeout)
+
+	done := make(chan struct{})
+	go func() {
+		s.scanWG.Wait()
+		s.notifyWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-deadline:
+		return false
+	}
+}
+
+// runScanNotifier listens for scan completion notifications.
+func (s *scheduler) runScanNotifier() {
+	defer s.notifyWG.Done()
+	for {
+		_, ok := <-s.scanNotifyCh
+		if !ok {
+			return
+		}
+		s.idleMu.Lock()
+		s.idleActive--
+		if s.idleActive <= 0 {
+			s.idleActive = 0
+			s.idleCond.Broadcast()
+		}
+		s.idleMu.Unlock()
+	}
+}
+
+// WaitForIdle waits until the scheduler has no active scan operations.
+func (s *scheduler) WaitForIdle(timeout time.Duration) bool {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+
+	deadline := time.Now().Add(timeout)
+	for s.idleActive > 0 {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		s.idleCond.Wait()
+	}
+	return true
+}
+
+// ScanOnce performs a single scan of all active rules.
+func (s *scheduler) ScanOnce(ctx context.Context) error {
+	rules, err := s.ruleService.ListActiveRules(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list active rules: %w", err)
+	}
+
+	s.logger.Debug("scanning rules", "count", len(rules))
+
+	var alertsTriggered int
+	now := time.Now()
+
+	for _, rule := range rules {
+		triggered, err := s.evaluateRule(ctx, rule, now)
+		if err != nil {
+			s.logger.Error("failed to evaluate rule", "rule_id", rule.ID, "error", err)
+			continue
+		}
+		if triggered {
+			alertsTriggered++
+		}
+	}
+
+	s.mu.Lock()
+	s.status.LastScan = &now
+	s.status.RulesScanned = len(rules)
+	s.status.AlertsTriggered = alertsTriggered
+	s.totalAlerts += int64(alertsTriggered)
+	s.status.TotalAlertsTriggered = s.totalAlerts
+	s.mu.Unlock()
+
+	s.idleMu.Lock()
+	s.idleActive++
+	s.idleMu.Unlock()
+
+	select {
+	case s.scanNotifyCh <- struct{}{}:
+	default:
+	}
+
+	s.logger.Info("rule scan completed", "rules_scanned", len(rules), "alerts_triggered", alertsTriggered)
+	return nil
+}
+
+// GetStatus returns the scheduler status.
+func (s *scheduler) GetStatus() SchedulerStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.status
+}
+
+// runLoop is the main scheduling loop.
+func (s *scheduler) runLoop(ctx context.Context) {
+	defer s.scanWG.Done()
+
+	scanInterval := s.config.Scheduler.ScanInterval
+	if scanInterval <= 0 {
+		scanInterval = 30 * time.Second
+	}
+
+	ticker := time.NewTicker(scanInterval)
+	defer ticker.Stop()
+
+	if err := s.ScanOnce(ctx); err != nil {
+		s.logger.Error("initial scan failed", "error", err)
+	}
+
+	s.mu.Lock()
+	nextScan := time.Now().Add(scanInterval)
+	s.status.NextScan = &nextScan
+	s.mu.Unlock()
+
+	for {
+		select {
+		case <-s.stopCh:
+			s.logger.Info("scheduler loop exiting")
+			return
+		case <-ctx.Done():
+			s.logger.Info("context cancelled, scheduler loop exiting")
+			return
+		case <-ticker.C:
+			if err := s.ScanOnce(ctx); err != nil {
+				s.logger.Error("scan failed", "error", err)
+			}
+			s.mu.Lock()
+			next := time.Now().Add(scanInterval)
+			s.status.NextScan = &next
+			s.mu.Unlock()
+		}
+	}
+}
+
+// evaluateRule evaluates a single rule against recent log entries.
+// Returns true if an alert was triggered.
+func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now time.Time) (bool, error) {
+	if !rule.CanFire(now) {
+		return false, nil
+	}
+
+	filter := &model.LogFilter{
+		Levels:   nil,
+		Sources:  nil,
+		Service:  rule.Condition.Service,
+		Keywords: rule.Condition.Keywords,
+	}
+
+	from := now.Add(-rule.Window)
+	filter.StartTime = &from
+	filter.EndTime = &now
+
+	if rule.Condition.Source != "" {
+		filter.Sources = []string{rule.Condition.Source}
+	}
+
+	if rule.Condition.Level != "" {
+		filter.Levels = []model.LogLevel{rule.Condition.Level}
+	}
+
+	count, err := s.logStore.Count(ctx, filter)
+	if err != nil {
+		return false, fmt.Errorf("failed to count logs for rule %s: %w", rule.ID, err)
+	}
+
+	if float64(count) < rule.Threshold {
+		return false, nil
+	}
+
+	alert := model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)
+	alert.Details["count"] = count
+	alert.Details["window"] = rule.Window.String()
+	alert.Details["threshold"] = rule.Threshold
+
+	if err := s.alertService.RecordAlert(ctx, alert); err != nil {
+		return false, fmt.Errorf("failed to record alert for rule %s: %w", rule.ID, err)
+	}
+
+	rule.MarkFired(now)
+	if _, err := s.ruleService.UpdateRule(ctx, rule.ID, &model.UpdateRuleRequest{}); err != nil {
+		s.logger.Warn("failed to update rule last_fired_at", "rule_id", rule.ID, "error", err)
+	}
+
+	s.logger.Warn("alert triggered", "rule_id", rule.ID, "rule_name", rule.Name, "count", count)
+	return true, nil
+}
