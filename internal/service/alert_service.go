@@ -58,7 +58,10 @@ func NewAlertService(s store.AlertStore, cfg *config.Config, log logger.Logger) 
 		config: cfg,
 		logger: log.WithField("service", "alert"),
 	}
-	svc.errorClassifier = &stringErrorClassifier{}
+	// Use the type-based classifier by default so that wrapped ServiceErrors
+	// (e.g. not_found, state_conflict, limit_exceeded) are identified by their
+	// Kind field rather than by fragile error-string suffix matching.
+	svc.errorClassifier = &typeErrorClassifier{}
 	return svc
 }
 

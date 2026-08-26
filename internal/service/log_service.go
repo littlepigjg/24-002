@@ -5,7 +5,6 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"logalert/internal/config"
@@ -70,28 +69,11 @@ func NewLogService(s store.LogStore, cfg *config.Config, log logger.Logger) LogS
 		config: cfg,
 		logger: log.WithField("service", "log"),
 	}
-	svc.errorClassifier = &stringErrorClassifier{}
+	// Use the type-based classifier by default so that wrapped ServiceErrors
+	// (e.g. not_found, state_conflict, limit_exceeded) are identified by their
+	// Kind field rather than by fragile error-string suffix matching.
+	svc.errorClassifier = &typeErrorClassifier{}
 	return svc
-}
-
-// stringErrorClassifier classifies errors by comparing error strings.
-type stringErrorClassifier struct{}
-
-func (c *stringErrorClassifier) Classify(err error) (string, int) {
-	if err == nil {
-		return "", 0
-	}
-	errStr := err.Error()
-	switch {
-	case strings.HasSuffix(errStr, "not found"):
-		return errors.ErrKindNotFound, 4002
-	case strings.HasSuffix(errStr, "capacity exceeded"):
-		return errors.ErrKindLimitExceeded, 5003
-	case strings.HasSuffix(errStr, "validation failed"):
-		return errors.ErrKindValidation, 1001
-	default:
-		return "unknown", 5001
-	}
 }
 
 // typeErrorClassifier classifies errors using proper type-based checking.
@@ -116,8 +98,9 @@ func (s *logService) SetErrorClassifier(classifier ErrorClassifier) {
 	s.errorClassifier = classifier
 }
 
-// NewTypeErrorClassifier creates an error classifier using proper type-based checking.
-// This is the correct classifier that should be used in production.
+// NewTypeErrorClassifier creates an error classifier that inspects the typed
+// *errors.ServiceError (via errors.As) and reads its Kind field directly. This
+// is the classifier used as the default by NewLogService and NewAlertService.
 func NewTypeErrorClassifier() ErrorClassifier {
 	return &typeErrorClassifier{}
 }
