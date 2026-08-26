@@ -85,6 +85,15 @@ func (s *cleanupService) Stop() {
 	}
 	close(s.stopCh)
 	s.running = false
+
+	// The notifier drains on stopCh and will not broadcast after Stop, so
+	// wake any WaitForIdle waiters explicitly and clear the in-flight count
+	// to keep them from blocking on a notifier that is now exiting.
+	s.idleMu.Lock()
+	s.idleActive = 0
+	s.idleCond.Broadcast()
+	s.idleMu.Unlock()
+
 	s.logger.Info("cleanup service stopped")
 }
 
@@ -108,20 +117,32 @@ func (s *cleanupService) AwaitIdle(timeout time.Duration) bool {
 }
 
 // runCleanupNotifier listens for cleanup completion notifications.
+//
+// It selects on stopCh alongside the notification channel so that Stop
+// (which closes stopCh) releases it together with runLoop. Without this,
+// the notifier would block forever on the notify channel: Stop never closes
+// cleanupNotifyCh (doing so would race with CleanupOnce's non-blocking
+// send), so notifyWG.Done() would never run and the goroutine would leak —
+// along with any AwaitIdle/WaitForServiceIdle caller parked on
+// notifyWG.Wait().
 func (s *cleanupService) runCleanupNotifier() {
 	defer s.notifyWG.Done()
 	for {
-		_, ok := <-s.cleanupNotifyCh
-		if !ok {
+		select {
+		case <-s.stopCh:
 			return
+		case _, ok := <-s.cleanupNotifyCh:
+			if !ok {
+				return
+			}
+			s.idleMu.Lock()
+			s.idleActive--
+			if s.idleActive <= 0 {
+				s.idleActive = 0
+				s.idleCond.Broadcast()
+			}
+			s.idleMu.Unlock()
 		}
-		s.idleMu.Lock()
-		s.idleActive--
-		if s.idleActive <= 0 {
-			s.idleActive = 0
-			s.idleCond.Broadcast()
-		}
-		s.idleMu.Unlock()
 	}
 }
 
