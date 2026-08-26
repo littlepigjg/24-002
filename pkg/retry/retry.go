@@ -31,7 +31,13 @@ func DefaultConfig() *Config {
 		InitialDelay:      100 * time.Millisecond,
 		MaxDelay:          5 * time.Second,
 		BackoffMultiplier: 2.0,
-		RetryableFunc:     errors.IsRetryableError,
+		// IsRetryableErrorWrapped traverses the full error chain via
+		// errors.As, so errors wrapped by intermediate layers (e.g. cache's
+		// fmt.Errorf("cache load failed: %w", err)) are still classified
+		// correctly. The non-wrapping IsRetryableError flattens to a type
+		// assertion and defaults unknown errors to retryable, which causes
+		// permanent errors (not_found) to be retried after they are wrapped.
+		RetryableFunc: errors.IsRetryableErrorWrapped,
 	}
 }
 
@@ -82,9 +88,9 @@ func DoWithValue[T any](ctx context.Context, cfg *Config, operation func() (T, e
 
 // DoWithClassification executes an operation with retries and returns
 // detailed error classification information alongside the operation result.
-// It uses the ClassifyError function to determine retryability, which
-// currently relies on the non-wrapping TypeOf that may fail for
-// errors that have been wrapped by intermediate layers such as cache.
+// It uses ClassifyErrorWrapped to determine retryability, which traverses
+// the full error chain via errors.As so that errors wrapped by intermediate
+// layers (such as the cache) are still classified correctly.
 func DoWithClassification(ctx context.Context, cfg *Config, operation func() error) (error, errors.ErrorType, bool, string) {
 	if cfg == nil {
 		cfg = DefaultConfig()
@@ -114,7 +120,7 @@ func DoWithClassification(ctx context.Context, cfg *Config, operation func() err
 			return nil, "", false, "success"
 		}
 
-		errType, retryable, category := errors.ClassifyError(lastErr)
+		errType, retryable, category := errors.ClassifyErrorWrapped(lastErr)
 		lastErrType = errType
 		lastErrRetryable = retryable
 		lastErrCategory = category
@@ -133,5 +139,5 @@ func RetryableFuncFromConfig(cfg *Config) func(error) bool {
 	if cfg != nil && cfg.RetryableFunc != nil {
 		return cfg.RetryableFunc
 	}
-	return errors.IsRetryableError
+	return errors.IsRetryableErrorWrapped
 }
