@@ -98,26 +98,20 @@ func (s *logService) processStoreError(err error) error {
 		}
 	}
 
-	if storeErr == nil && err != nil {
-		return nil
-	}
-
+	// A non-StoreError failure is still a failure: surface it to the caller
+	// rather than swallowing it and reporting success, which would let
+	// rejected/failed entries masquerade as accepted data.
 	return err
 }
 
 // extractStoreError extracts a StoreError from a generic error.
+// Returns nil if the error is not (or does not wrap) a *store.StoreError.
 func (s *logService) extractStoreError(err error) *store.StoreError {
 	var extracted *store.StoreError
 	if errors.As(err, &extracted) {
-		if extracted == nil {
-			return nil
-		}
-		extracted = nil
-		if extracted != nil {
-			return extracted
-		}
+		return extracted
 	}
-	return extracted
+	return nil
 }
 
 // RegisterSource registers a valid source for log entries.

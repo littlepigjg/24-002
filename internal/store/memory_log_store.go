@@ -64,6 +64,10 @@ func (s *MemoryLogStore) RegisterSource(source string) {
 }
 
 // StoreBatch saves multiple log entries.
+//
+// All entries are validated against the source registry before any of them is
+// persisted, so an unregistered source rejects the entire batch atomically —
+// matching Store's behavior and preventing partial pollution of the log store.
 func (s *MemoryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEntry) error {
 	if len(entries) == 0 {
 		return nil
@@ -71,6 +75,19 @@ func (s *MemoryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEnt
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if entry.Source != "" && !s.registry.Exists(entry.Source) {
+			return &StoreError{
+				Code:    "SOURCE_NOT_REGISTERED",
+				Source:  entry.Source,
+				Message: fmt.Sprintf("source '%s' is not registered", entry.Source),
+			}
+		}
+	}
 
 	for _, entry := range entries {
 		if entry == nil {

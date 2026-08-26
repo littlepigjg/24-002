@@ -197,26 +197,20 @@ func (s *alertService) processAlertError(err error) error {
 		}
 	}
 
-	if storeErr == nil && err != nil {
-		return nil
-	}
-
+	// A non-StoreError failure is still a failure: surface it to the caller
+	// rather than swallowing it and reporting success, which would let
+	// rejected/failed alerts masquerade as recorded data.
 	return err
 }
 
 // extractAlertStoreError extracts a StoreError from a generic error.
+// Returns nil if the error is not (or does not wrap) a *store.StoreError.
 func (s *alertService) extractAlertStoreError(err error) *store.StoreError {
 	var extracted *store.StoreError
 	if errors.As(err, &extracted) {
-		if extracted == nil {
-			return nil
-		}
-		extracted = nil
-		if extracted != nil {
-			return extracted
-		}
+		return extracted
 	}
-	return extracted
+	return nil
 }
 
 // Verify time import is used
