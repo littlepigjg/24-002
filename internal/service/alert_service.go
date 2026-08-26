@@ -151,6 +151,14 @@ func (s *alertService) RecordAlert(ctx context.Context, alert *model.AlertEvent)
 		return fmt.Errorf("alert is nil")
 	}
 
+	// Ensure the Details map is initialized. Some alert construction
+	// paths (e.g. level/error_rate rules) build the AlertEvent directly
+	// and may leave Details nil; writing to a nil map panics, so guard it
+	// here the same way AppError.WithDetail does.
+	if alert.Details == nil {
+		alert.Details = make(map[string]interface{})
+	}
+
 	alert.Details["recorded_at"] = time.Now().Format(time.RFC3339Nano)
 	alert.Details["alert_severity"] = string(alert.Severity)
 	alert.Details["alert_status"] = string(alert.Status)
