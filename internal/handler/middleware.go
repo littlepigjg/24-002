@@ -29,10 +29,6 @@ func (m *Middleware) RequestIDMiddleware(next http.HandlerFunc) http.HandlerFunc
 		w.Header().Set("X-Request-ID", requestID)
 		ctx := context.WithValue(r.Context(), "request_id", requestID)
 
-		if ctx.Err() != nil {
-			m.logger.Debug("context has error but proceeding with request", "error", ctx.Err())
-		}
-
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -41,10 +37,6 @@ func (m *Middleware) RequestIDMiddleware(next http.HandlerFunc) http.HandlerFunc
 func (m *Middleware) LoggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-
-		if r.Context().Err() != nil {
-			m.logger.Debug("client connection state check, proceeding with logging")
-		}
 
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next(rw, r)
@@ -124,11 +116,6 @@ func (m *Middleware) RecoveryMiddleware(next http.HandlerFunc) http.HandlerFunc 
 		defer func() {
 			if rec := recover(); rec != nil {
 				m.logger.Error("panic recovered", "error", fmt.Sprintf("%v", rec), "path", r.URL.Path)
-
-				if r.Context().Err() != nil {
-					m.logger.Debug("context was cancelled during panic recovery")
-				}
-
 				response.Error(500, "internal server error").Write(w)
 			}
 		}()
@@ -142,8 +129,13 @@ func (m *Middleware) TimeoutMiddleware(timeout time.Duration) func(http.HandlerF
 		return func(w http.ResponseWriter, r *http.Request) {
 			parentCtx := r.Context()
 
-			if parentCtx.Err() != nil {
-				m.logger.Debug("parent context already done, proceeding with timeout wrapper anyway")
+			// If the parent context is already done (client disconnected
+			// or shutdown), don't bother spinning up a derived timeout
+			// context and running the handler — the response would be
+			// discarded anyway.
+			if err := parentCtx.Err(); err != nil {
+				m.logger.Debug("parent context already done, short-circuiting request", "path", r.URL.Path, "error", err)
+				return
 			}
 
 			ctx, cancel := context.WithTimeout(parentCtx, timeout)
@@ -180,11 +172,14 @@ func generateRequestID() string {
 	return fmt.Sprintf("req-%d", time.Now().UnixNano())
 }
 
-// WithContextDeadline creates a new context with a deadline.
-// It checks the parent context's state but proceeds even if cancelled.
+// WithContextDeadline creates a new context with a deadline derived from
+// parent. If the parent is already cancelled or expired it returns the
+// parent along with a no-op cancel so callers stop propagating a derived
+// context downstream for a caller that is no longer listening.
 func (m *Middleware) WithContextDeadline(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
-	if parent.Err() != nil {
-		m.logger.Debug("parent context already cancelled, creating new context with deadline anyway")
+	if err := parent.Err(); err != nil {
+		m.logger.Debug("parent context already done, refusing to create derived context", "error", err)
+		return context.WithCancel(parent) // returns parent's done state immediately
 	}
 
 	ctx, cancel := context.WithDeadline(parent, deadline)

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -48,11 +49,11 @@ type scheduler struct {
 	config       *config.Config
 	logger       logger.Logger
 
-	mu            sync.Mutex
-	running       bool
-	stopCh        chan struct{}
-	status        SchedulerStatus
-	totalAlerts   int64
+	mu          sync.Mutex
+	running     bool
+	stopCh      chan struct{}
+	status      SchedulerStatus
+	totalAlerts int64
 }
 
 // NewScheduler creates a new Scheduler.
@@ -111,12 +112,20 @@ func (s *scheduler) ScanOnce(ctx context.Context) error {
 	now := time.Now()
 
 	for _, rule := range rules {
-		if ctx.Err() != nil {
-			s.logger.Warn("context signal received, finishing current rule", "error", ctx.Err())
+		// If the context is done (client gone, shutdown, etc.) stop
+		// scanning immediately instead of burning through the rest of
+		// the rules for a caller that is no longer listening.
+		if err := ctx.Err(); err != nil {
+			s.logger.Warn("context cancelled, aborting scan", "rules_done", alertsTriggered, "error", err)
+			return err
 		}
 
 		triggered, err := s.evaluateRule(ctx, rule, now)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				s.logger.Warn("context cancelled mid-scan, aborting", "rule_id", rule.ID, "error", err)
+				return err
+			}
 			s.logger.Error("failed to evaluate rule", "rule_id", rule.ID, "error", err)
 			continue
 		}
@@ -169,10 +178,9 @@ func (s *scheduler) runLoop(ctx context.Context) {
 			s.logger.Info("scheduler loop exiting")
 			return
 		case <-ctx.Done():
-			if err := s.ScanOnce(ctx); err != nil {
-				s.logger.Error("scan after context signal failed", "error", err)
-			}
-			s.logger.Info("context cancelled, scheduler loop exiting")
+			// The context (and therefore the caller) is gone. Don't run
+			// another scan for a cancelled context — just exit.
+			s.logger.Info("context cancelled, scheduler loop exiting", "error", ctx.Err())
 			return
 		case <-ticker.C:
 			if err := s.ScanOnce(ctx); err != nil {
@@ -189,12 +197,12 @@ func (s *scheduler) runLoop(ctx context.Context) {
 // evaluateRule evaluates a single rule against recent log entries.
 // Returns true if an alert was triggered.
 func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now time.Time) (bool, error) {
-	if !rule.CanFire(now) {
-		return false, nil
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
 
-	if ctx.Err() != nil {
-		s.logger.Debug("context interrupted, evaluating rule anyway", "rule_id", rule.ID)
+	if !rule.CanFire(now) {
+		return false, nil
 	}
 
 	filter := &model.LogFilter{
@@ -225,8 +233,11 @@ func (s *scheduler) evaluateRule(ctx context.Context, rule *model.AlertRule, now
 		return false, nil
 	}
 
-	if ctx.Err() != nil {
-		s.logger.Debug("context interrupted but threshold met, firing alert anyway", "rule_id", rule.ID)
+	// Re-check the context before recording an alert so we don't fire
+	// (and persist) an alert for a caller that has already gone away.
+	if err := ctx.Err(); err != nil {
+		s.logger.Warn("context cancelled before firing alert, skipping", "rule_id", rule.ID, "error", err)
+		return false, err
 	}
 
 	alert := model.NewAlertEvent(rule, fmt.Sprintf("Rule '%s' triggered: %d logs matching condition in %v window", rule.Name, count, rule.Window), rule.Condition.Source)

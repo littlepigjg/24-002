@@ -26,7 +26,7 @@ func NewMemoryLogStore(maxSize int, log logger.Logger) *MemoryLogStore {
 	return &MemoryLogStore{
 		entries: make(map[string]*model.LogEntry),
 		maxSize: maxSize,
-		logger:   log,
+		logger:  log,
 	}
 }
 
@@ -36,17 +36,36 @@ func (s *MemoryLogStore) SetProcessingDelay(d time.Duration) {
 	s.processingDelay = d
 }
 
+// waitOrCancel blocks for the configured processing delay unless ctx is
+// already cancelled or expires first. It returns the ctx error (nil if the
+// delay elapsed normally) so callers can abort the operation instead of
+// doing work for a client that has gone away.
+func (s *MemoryLogStore) waitOrCancel(ctx context.Context) error {
+	if s.processingDelay <= 0 {
+		return ctx.Err()
+	}
+	select {
+	case <-time.After(s.processingDelay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Store saves a log entry to memory.
 func (s *MemoryLogStore) Store(ctx context.Context, entry *model.LogEntry) error {
 	if entry == nil {
 		return fmt.Errorf("entry is nil")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return err
 	}
 
 	if len(s.entries) >= s.maxSize {
@@ -63,12 +82,15 @@ func (s *MemoryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEnt
 	if len(entries) == 0 {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return err
 	}
 
 	for _, entry := range entries {
@@ -87,6 +109,10 @@ func (s *MemoryLogStore) StoreBatch(ctx context.Context, entries []*model.LogEnt
 
 // Get retrieves a log entry by ID.
 func (s *MemoryLogStore) Get(ctx context.Context, id string) (*model.LogEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -99,11 +125,15 @@ func (s *MemoryLogStore) Get(ctx context.Context, id string) (*model.LogEntry, e
 
 // Query searches log entries with a filter.
 func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, limit, offset int) ([]*model.LogEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return nil, err
 	}
 
 	var results []*model.LogEntry
@@ -132,11 +162,15 @@ func (s *MemoryLogStore) Query(ctx context.Context, filter *model.LogFilter, lim
 
 // Count counts log entries matching a filter.
 func (s *MemoryLogStore) Count(ctx context.Context, filter *model.LogFilter) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return 0, err
 	}
 
 	var count int64
@@ -150,11 +184,15 @@ func (s *MemoryLogStore) Count(ctx context.Context, filter *model.LogFilter) (in
 
 // Delete removes a log entry by ID.
 func (s *MemoryLogStore) Delete(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return err
 	}
 
 	if _, ok := s.entries[id]; !ok {
@@ -166,11 +204,15 @@ func (s *MemoryLogStore) Delete(ctx context.Context, id string) error {
 
 // DeleteExpired removes log entries older than the specified time.
 func (s *MemoryLogStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return 0, err
 	}
 
 	var count int64
@@ -187,11 +229,15 @@ func (s *MemoryLogStore) DeleteExpired(ctx context.Context, before time.Time) (i
 
 // ListSources returns all distinct sources.
 func (s *MemoryLogStore) ListSources(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return nil, err
 	}
 
 	sourceSet := make(map[string]bool)
@@ -209,11 +255,15 @@ func (s *MemoryLogStore) ListSources(ctx context.Context) ([]string, error) {
 
 // ListServices returns all distinct services.
 func (s *MemoryLogStore) ListServices(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return nil, err
 	}
 
 	serviceSet := make(map[string]bool)
@@ -233,11 +283,15 @@ func (s *MemoryLogStore) ListServices(ctx context.Context) ([]string, error) {
 
 // Statistics returns log statistics for a time range.
 func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*LogStatistics, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return nil, err
 	}
 
 	stats := &LogStatistics{
@@ -275,11 +329,15 @@ func (s *MemoryLogStore) Statistics(ctx context.Context, from, to time.Time) (*L
 
 // HourlyBreakdown returns log counts broken down by hour.
 func (s *MemoryLogStore) HourlyBreakdown(ctx context.Context, from, to time.Time) ([]HourlyCount, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.processingDelay > 0 {
-		time.Sleep(s.processingDelay)
+	if err := s.waitOrCancel(ctx); err != nil {
+		return nil, err
 	}
 
 	type key struct {
